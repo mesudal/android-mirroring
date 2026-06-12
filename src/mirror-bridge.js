@@ -98,14 +98,38 @@ class MirrorBridge {
 
   // ── jar 확보 ─────────────────────────────────────────────────
   async ensureJar() {
-    // 시스템 설치 경로 탐색
+    // 1. 시스템 설치 경로 탐색 (macOS / Linux)
     for (const p of [
       '/usr/share/scrcpy/scrcpy-server',
       '/usr/local/share/scrcpy/scrcpy-server',
       '/opt/homebrew/share/scrcpy/scrcpy-server',
     ]) { if (fs.existsSync(p)) { this.log('jar: system ' + p); return { path: p, ver: null } } }
 
-    // GitHub 최신 버전 확인
+    // 2. 로컬 binDir에 이미 캐싱된 scrcpy-server-v* 또는 scrcpy-server 파일이 있는지 우선 스캔 (오프라인 실행 보장)
+    try {
+      if (fs.existsSync(this.binDir)) {
+        const files = fs.readdirSync(this.binDir)
+        // scrcpy-server-v4.0 등 버전명이 명시된 캐시파일 우선 검색
+        const jarFile = files.find(f => f.startsWith('scrcpy-server-v'))
+        if (jarFile) {
+          const cached = path.join(this.binDir, jarFile)
+          const ver = this._jarVer(jarFile)
+          this.log(`jar: found local cached ${jarFile} (v${ver})`)
+          return { path: cached, ver }
+        }
+        // 일반 scrcpy-server 파일 검색
+        const plainJar = files.find(f => f === 'scrcpy-server')
+        if (plainJar) {
+          const cached = path.join(this.binDir, plainJar)
+          this.log(`jar: found local plain scrcpy-server`)
+          return { path: cached, ver: null }
+        }
+      }
+    } catch (e) {
+      this.log('로컬 캐시 스캔 중 예외: ' + e.message)
+    }
+
+    // 3. 로컬에 없을 경우에만 GitHub 최신 버전 확인 및 다운로드 시도
     let ver = FALLBACK_VER
     try {
       const r = await fetch('https://api.github.com/repos/Genymobile/scrcpy/releases/latest',
@@ -113,13 +137,11 @@ class MirrorBridge {
       const j = await r.json()
       ver = j.tag_name.replace(/^v/, '')
       this.log(`GitHub latest: v${ver}`)
-    } catch { this.log('GitHub API 제한 — v' + ver + ' 사용') }
+    } catch { this.log('GitHub API 제한 또는 오프라인 — v' + ver + ' 사용') }
 
-    // 버전별 캐시 확인
     const cached = path.join(this.binDir, `scrcpy-server-v${ver}`)
     if (fs.existsSync(cached)) { this.log(`jar: cache (v${ver})`); return { path: cached, ver } }
 
-    // 다운로드
     const url = `https://github.com/Genymobile/scrcpy/releases/download/v${ver}/scrcpy-server-v${ver}`
     this.log(`downloading v${ver}...`)
     const res = await fetch(url)

@@ -97,9 +97,19 @@ Android 10+는 보안상 백그라운드 클립보드 접근을 차단합니다.
 없으면 "PC → Android" 방향은 scrcpy 미러링 창에서 Ctrl+V로 대신할 수 있습니다.
 
 ## 문제 해결
+- **macOS: '손상되었기 때문에 열 수 없습니다' 오류 해결 방법**: 
+  애플 개발자 인증서 서명 없이 빌드된 앱을 인터넷(Slack, 브라우저 등)에서 다운로드하면 macOS 게이트키퍼 보안에 의해 차단되며 위 에러가 발생합니다. 실제 파일이 손상된 것이 아니며, 아래 단계를 거쳐 쉽게 해결할 수 있습니다.
+  1. DMG 파일을 실행하여 DroidBridge를 **응용 프로그램 (Applications)** 폴더로 드래그하여 설치합니다.
+  2. 맥의 **터미널 (Terminal)** 앱을 실행합니다.
+  3. 아래 명령어를 입력하고 엔터를 칩니다:
+     ```bash
+     xattr -cr /Applications/DroidBridge.app
+     ```
+  4. 이제 응용 프로그램 폴더에서 DroidBridge를 실행하시면 에러 없이 즉시 정상 실행됩니다.
 - **기기가 안 보일 때**: `bin/adb devices`로 직접 확인. `unauthorized`면 폰에서 디버깅 허용 팝업 확인
 - **scrcpy 창이 안 뜰 때**: `bin/scrcpy --serial <시리얼>`로 직접 실행해 오류 메시지 확인
 - **Windows에서 adb.exe 실행 오류**: `AdbWinApi.dll` 두 개가 같은 폴더에 있는지 확인
+
 
 ## 프로젝트 구조
 ```

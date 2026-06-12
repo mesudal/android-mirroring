@@ -854,13 +854,13 @@ async function runSetupCheck() {
 
   if (!r.adb.found) {
     issues.push(r.platform === 'win32'
-      ? 'adb를 찾을 수 없습니다 — <b>시작하기.bat</b>을 실행하면 자동으로 설치됩니다'
-      : 'adb를 찾을 수 없습니다 — 터미널에서 <b>./start.sh</b>를 실행하면 자동으로 설치됩니다')
+      ? 'adb를 찾을 수 없습니다 — 폴더 내의 <b>Windows에서_시작.bat</b>을 실행하면 자동으로 설치됩니다'
+      : 'adb를 찾을 수 없습니다 — 폴더 내의 <b>Mac_Linux에서_시작.command</b>를 실행하면 자동으로 설치됩니다')
   }
   if (!r.scrcpy.found) {
     issues.push(r.platform === 'win32'
-      ? 'scrcpy를 찾을 수 없습니다 — <b>시작하기.bat</b>을 실행하면 자동으로 설치됩니다'
-      : 'scrcpy를 찾을 수 없습니다 — 터미널에서 <b>./start.sh</b>를 실행하면 자동으로 설치됩니다')
+      ? 'scrcpy를 찾을 수 없습니다 — 폴더 내의 <b>Windows에서_시작.bat</b>을 실행하면 자동으로 설치됩니다'
+      : 'scrcpy를 찾을 수 없습니다 — 폴더 내의 <b>Mac_Linux에서_시작.command</b>를 실행하면 자동으로 설치됩니다')
   }
   if (r.adb.found && r.deviceCount === 0) {
     issues.push('연결된 기기가 없습니다 — USB 연결 후 폰에서 "USB 디버깅 허용"을 눌러주세요 (Wi-Fi 연결도 가능)')
