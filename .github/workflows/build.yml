@@ -1,0 +1,45 @@
+name: Build Desktop App
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch: # 깃허브 웹 화면에서 직접 빌드 버튼을 눌러 실행할 수 있게 해줍니다.
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install
+
+      # 윈도우 환경 빌드
+      - name: Build Application (Windows)
+        if: matrix.os == 'windows-latest'
+        run: npm run build:win
+
+      # 맥 환경 빌드 (인증서가 없을 경우 경고 로그는 출력되지만, 미인증 상태의 .dmg가 정상 생성됩니다)
+      - name: Build Application (macOS)
+        if: matrix.os == 'macos-latest'
+        run: npm run build:mac
+
+      # 빌드 완료 후 결과물(.exe, .dmg)을 깃허브에 업로드하여 다운로드 가능하게 만듭니다.
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DroidBridge-${{ matrix.os }}
+          path: dist/DroidBridge*
+          if-no-files-found: error
