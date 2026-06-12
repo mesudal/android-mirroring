@@ -26,6 +26,19 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
+      # 윈도우 빌드를 위해 adb/scrcpy 실행 바이너리 준비
+      - name: Prepare Windows Binaries
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir bin
+          powershell -File ./Windows_setup.ps1
+        shell: bash
+
+      # 맥 빌드를 위해 빈 bin 디렉토리 구조 확보
+      - name: Prepare macOS Binaries Directory
+        if: matrix.os == 'macos-latest'
+        run: mkdir bin
+
       # 윈도우 환경 빌드
       - name: Build Application (Windows)
         if: matrix.os == 'windows-latest'
