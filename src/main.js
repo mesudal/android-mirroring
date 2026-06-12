@@ -257,6 +257,43 @@ ipcMain.handle('adb:keyevent', async (_, { serial, keycode }) => {
   } catch (e) { return { ok: false, message: String(e) } }
 })
 
+// 현재 액티비티(화면명) 조회
+ipcMain.handle('adb:current-activity', async (_, serial) => {
+  try {
+    let out = await runAdb(['-s', serial, 'shell', 'dumpsys window displays'])
+    let match = out.match(/mCurrentFocus=Window\{[^\s]+\s+[^\s]+\s+([^\s\}]+)/)
+    if (match && match[1] && match[1] !== 'null') {
+      return { ok: true, activity: match[1] }
+    }
+
+    out = await runAdb(['-s', serial, 'shell', 'dumpsys activity activities'])
+    match = out.match(/mResumedActivity:.*?([a-zA-Z0-9_\.]+\/[a-zA-Z0-9_\.]+)/)
+    if (match && match[1]) {
+      return { ok: true, activity: match[1] }
+    }
+
+    out = await runAdb(['-s', serial, 'shell', 'dumpsys activity top'])
+    match = out.match(/ACTIVITY\s+([a-zA-Z0-9_\.]+\/[a-zA-Z0-9_\.]+)/)
+    if (match && match[1]) {
+      return { ok: true, activity: match[1] }
+    }
+
+    return { ok: false, message: 'Not found' }
+  } catch (e) {
+    return { ok: false, message: String(e) }
+  }
+})
+
+// 현재 액티비티 상세 정보 조회
+ipcMain.handle('adb:activity-info', async (_, { serial, activityName }) => {
+  try {
+    const out = await runAdb(['-s', serial, 'shell', `dumpsys activity ${activityName}`])
+    return { ok: true, info: out }
+  } catch (e) {
+    return { ok: false, message: String(e) }
+  }
+})
+
 // ── 세팅 체크 ──────────────────────────────────────────────────
 ipcMain.handle('setup:check', async () => {
   adbPath = resolveBin(adbBin)  // 재탐색

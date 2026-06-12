@@ -5,6 +5,8 @@ const state = {
   mirroring: false,
   recording: false,
   timerInterval: null,
+  activityInterval: null,
+  currentActivityName: null,
   seconds: 0,
   maxSize: 1280,
 }
@@ -89,6 +91,65 @@ function setConnected(name) {
   $('phoneIcon').className = 'ti ti-device-mobile'
   $('phoneMsg').textContent = '미러링 시작 버튼을 눌러주세요'
   showToast(name + ' 연결됨')
+  startActivityPolling()
+}
+
+// ── 현재 화면(Activity) 조회 ───────────────────────────────────
+function startActivityPolling() {
+  stopActivityPolling()
+  state.activityInterval = setInterval(async () => {
+    if (!state.serial) return
+    const r = await window.db.getCurrentActivity(state.serial)
+    const el = $('activityText')
+    const headerText = $('headerActivityText')
+    if (el) {
+      if (r.ok) {
+        el.textContent = r.activity
+        el.title = r.activity
+        state.currentActivityName = r.activity
+        if (headerText) headerText.textContent = r.activity
+      } else {
+        el.textContent = '—'
+        el.title = '—'
+        state.currentActivityName = null
+        if (headerText) headerText.textContent = '—'
+      }
+    }
+  }, 2000)
+}
+
+function stopActivityPolling() {
+  if (state.activityInterval) {
+    clearInterval(state.activityInterval)
+    state.activityInterval = null
+  }
+  const el = $('activityText')
+  if (el) {
+    el.textContent = '—'
+    el.title = '—'
+  }
+  state.currentActivityName = null
+  const headerText = $('headerActivityText')
+  if (headerText) headerText.textContent = '—'
+}
+
+// ── 상세 정보 모달 ──────────────────────────────────────────────
+async function showActivityInfo() {
+  if (!state.currentActivityName || !state.serial) return
+  $('activityModalSubtitle').textContent = state.currentActivityName
+  $('activityInfoContent').textContent = '정보를 불러오는 중입니다...'
+  $('activityInfoOverlay').classList.add('open')
+
+  const r = await window.db.getActivityInfo(state.serial, state.currentActivityName)
+  if (r.ok) {
+    $('activityInfoContent').textContent = r.info || '정보가 없습니다.'
+  } else {
+    $('activityInfoContent').textContent = '정보 불러오기 실패:\n' + r.message
+  }
+}
+
+function closeActivityModal() {
+  $('activityInfoOverlay').classList.remove('open')
 }
 
 // ── Wi-Fi 연결 ─────────────────────────────────────────────────

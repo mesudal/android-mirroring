@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld('db', {
   clipboardSend:   (opts)        => ipcRenderer.invoke('adb:clipboard-send', opts),
   clipboardGet:    (serial)      => ipcRenderer.invoke('adb:clipboard-get', serial),
   keyevent:        (opts)        => ipcRenderer.invoke('adb:keyevent', opts),
+  getCurrentActivity: (serial)   => ipcRenderer.invoke('adb:current-activity', serial),
+  getActivityInfo: (serial, activityName) => ipcRenderer.invoke('adb:activity-info', { serial, activityName }),
 
   // 세팅
   setupCheck:      ()            => ipcRenderer.invoke('setup:check'),
