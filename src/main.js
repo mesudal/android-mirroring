@@ -1,17 +1,38 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron')
-const path   = require('path')
+const path = require('path')
 const { spawn, execFile, execSync } = require('child_process')
-const fs     = require('fs')
-const os     = require('os')
+const fs = require('fs')
+const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
 
 const isDev = process.argv.includes('--dev')
-const binDir = app.isPackaged
+let binDir = app.isPackaged
   ? path.join(process.resourcesPath, 'bin')
   : path.join(__dirname, '..', 'bin')
 
+if (app.isPackaged) {
+  try {
+    if (!fs.existsSync(binDir)) fs.mkdirSync(binDir, { recursive: true })
+    fs.accessSync(binDir, fs.constants.W_OK)
+  } catch (e) {
+    const userBin = path.join(app.getPath('userData'), 'bin')
+    if (!fs.existsSync(userBin)) fs.mkdirSync(userBin, { recursive: true })
+    
+    if (fs.existsSync(binDir)) {
+      fs.readdirSync(binDir).forEach(f => {
+        const src = path.join(binDir, f)
+        const dst = path.join(userBin, f)
+        if (!fs.existsSync(dst)) {
+          try { fs.copyFileSync(src, dst) } catch(err) {}
+        }
+      })
+    }
+    binDir = userBin
+  }
+}
+
 const platform = process.platform
-const adbBin   = platform === 'win32' ? 'adb.exe' : 'adb'
+const adbBin = platform === 'win32' ? 'adb.exe' : 'adb'
 
 // ── 바이너리 자동 탐색: bin/ 폴더 → 시스템 PATH 순서로 검색 ──
 function resolveBin(name) {
@@ -36,15 +57,15 @@ function resolveBin(name) {
     const cmd = platform === 'win32' ? `where ${name}` : `which ${cleanName}`
     const found = execSync(cmd, { encoding: 'utf8' }).split('\n')[0].trim()
     if (found && fs.existsSync(found)) return found
-  } catch {}
+  } catch { }
   return null
 }
 
 
 let adbPath = resolveBin(adbBin)
 
-let mainWindow      = null
-let mirror          = null   // MirrorBridge 인스턴스
+let mainWindow = null
+let mirror = null   // MirrorBridge 인스턴스
 let recordingProcess = null
 
 function getMirror() {
@@ -108,7 +129,7 @@ ipcMain.handle('adb:devices', async () => {
       .map(line => {
         const parts = line.split(/\s+/)
         const serial = parts[0]
-        const model  = (line.match(/model:(\S+)/) || [])[1] || serial
+        const model = (line.match(/model:(\S+)/) || [])[1] || serial
         const product = (line.match(/product:(\S+)/) || [])[1] || ''
         return { serial, model: model.replace(/_/g, ' '), product }
       })
@@ -139,6 +160,10 @@ ipcMain.handle('mirror:stop', async () => {
   return { ok: true }
 })
 
+ipcMain.handle('mirror:init', async () => {
+  return await getMirror().startWss()
+})
+
 // 화면 캡처
 ipcMain.handle('adb:screenshot', async (_, serial) => {
   try {
@@ -146,13 +171,13 @@ ipcMain.handle('adb:screenshot', async (_, serial) => {
     await runAdb(['-s', serial, 'shell', 'screencap', '-p', '/sdcard/_db_tmp.png'])
     await runAdb(['-s', serial, 'pull', '/sdcard/_db_tmp.png', tmp])
     await runAdb(['-s', serial, 'shell', 'rm', '/sdcard/_db_tmp.png'])
-    const { filePath } = await dialog.showSaveDialog(mainWindow, {
-      title: '스크린샷 저장',
-      defaultPath: `screenshot_${Date.now()}.png`,
-      filters: [{ name: 'PNG', extensions: ['png'] }],
-    })
-    if (filePath) { fs.copyFileSync(tmp, filePath); fs.unlinkSync(tmp); return { ok: true, path: filePath } }
-    return { ok: false, message: '취소됨' }
+    
+    const { clipboard, nativeImage } = require('electron')
+    const image = nativeImage.createFromPath(tmp)
+    clipboard.writeImage(image)
+    fs.unlinkSync(tmp)
+    
+    return { ok: true, path: '클립보드' }
   } catch (e) { return { ok: false, message: String(e) } }
 })
 
@@ -172,7 +197,7 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
 ipcMain.handle('adb:record-stop', async (_, serial) => {
   try {
     // 기기에서 실행 중인 screenrecord 프로세스에 SIGINT 전송 (정상 종료 → 파일 무결성 보장)
-    await runAdb(['-s', serial, 'shell', 'pkill', '-2', 'screenrecord']).catch(() => {})
+    await runAdb(['-s', serial, 'shell', 'pkill', '-2', 'screenrecord']).catch(() => { })
     if (recordingProcess) { recordingProcess.kill(); recordingProcess = null }
     // 기기가 mp4 moov atom을 쓸 시간 확보
     await new Promise(r => setTimeout(r, 2000))
@@ -220,7 +245,8 @@ ipcMain.handle('adb:install', (_, { serial, apkPath }) => {
 
 // 파일 push (PC → 기기)
 ipcMain.handle('adb:push', async (_, { serial, localPath, remotePath }) => {
-  try { return { ok: true, result: await runAdb(['-s', serial, 'push', localPath, remotePath]) }
+  try {
+    return { ok: true, result: await runAdb(['-s', serial, 'push', localPath, remotePath]) }
   } catch (e) { return { ok: false, message: String(e) } }
 })
 
@@ -247,13 +273,15 @@ ipcMain.handle('adb:clipboard-send', async (_, { serial, text }) => {
 
 // 클립보드 가져오기
 ipcMain.handle('adb:clipboard-get', async (_, serial) => {
-  try { return { ok: true, text: await runAdb(['-s', serial, 'shell', 'clipper']) }
+  try {
+    return { ok: true, text: await runAdb(['-s', serial, 'shell', 'clipper']) }
   } catch (e) { return { ok: false, message: String(e) } }
 })
 
 // 키 이벤트
 ipcMain.handle('adb:keyevent', async (_, { serial, keycode }) => {
-  try { await runAdb(['-s', serial, 'shell', 'input', 'keyevent', String(keycode)]); return { ok: true }
+  try {
+    await runAdb(['-s', serial, 'shell', 'input', 'keyevent', String(keycode)]); return { ok: true }
   } catch (e) { return { ok: false, message: String(e) } }
 })
 
@@ -302,14 +330,14 @@ ipcMain.handle('setup:check', async () => {
   const serverJarExists = fs.existsSync(path.join(binDir, 'scrcpy-server'))
 
   if (adbPath) {
-    try { adbVersion = (await runAdb(['--version'])).split('\n')[0] } catch {}
+    try { adbVersion = (await runAdb(['--version'])).split('\n')[0] } catch { }
     try {
       const out = await runAdb(['devices'])
       deviceCount = out.split('\n').slice(1).filter(l => /\s+device\b/.test(l.trim())).length
-    } catch {}
+    } catch { }
   }
   return {
-    adb:    { found: !!adbPath, path: adbPath, version: adbVersion },
+    adb: { found: !!adbPath, path: adbPath, version: adbVersion },
     scrcpy: { found: true, version: `server jar ${serverJarExists ? '있음(캐시)' : '없음(자동 다운로드)'}` },
     deviceCount,
     platform,

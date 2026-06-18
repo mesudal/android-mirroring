@@ -17,29 +17,27 @@
  */
 'use strict'
 
-const net    = require('net')
+const net = require('net')
 const { WebSocketServer } = require('ws')
 const { execFile, spawn } = require('child_process')
-const path   = require('path')
-const fs     = require('fs')
+const path = require('path')
+const fs = require('fs')
 
-const FORWARD_PORT  = 27183
-const WS_PORT       = 7183
-const FALLBACK_VER  = '4.0'
+const FALLBACK_VER = '4.0'
 const H264_CODEC_ID = 0x68323634  // ASCII "h264"
 
 class MirrorBridge {
   constructor({ adbPath, binDir, onLog }) {
-    this.adbPath   = adbPath
-    this.binDir    = binDir
-    this.log       = msg => onLog?.('[bridge] ' + msg)
-    this.wss       = null
-    this.wsClient  = null
-    this.adbSock   = null
+    this.adbPath = adbPath
+    this.binDir = binDir
+    this.log = msg => onLog?.('[bridge] ' + msg)
+    this.wss = null
+    this.wsClient = null
+    this.adbSock = null
     this.controlSock = null
-    this.srvProc   = null
-    this.serial    = null
-    this.running   = false
+    this.srvProc = null
+    this.serial = null
+    this.running = false
     this._metaJson = null   // 캐싱: 늦게 연결된 WS 클라이언트에게 전송
     this._frameCnt = 0
   }
@@ -56,24 +54,24 @@ class MirrorBridge {
 
   // ── WSS 시작 ─────────────────────────────────────────────────
   startWss() {
-    if (this.wss) return Promise.resolve()
+    if (this.wss) return Promise.resolve(this.wsPort)
     return new Promise((res, rej) => {
-      const wss = new WebSocketServer({ port: WS_PORT, host: '127.0.0.1' })
+      const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' })
       wss.once('listening', () => {
-        this.log(`WSS ready :${WS_PORT}`)
+        this.wsPort = wss.address().port
+        this.log(`WSS ready :${this.wsPort}`)
         this.wss = wss
-        res()
+        res(this.wsPort)
       })
       wss.once('error', e => {
-        if (e.code === 'EADDRINUSE') { this.wss = wss; res() }
-        else rej(e)
+        rej(e)
       })
       wss.on('connection', ws => {
         this.wsClient = ws
         this.log('★ renderer WS 연결됨')
         // 이미 meta가 캐싱되어 있으면 즉시 전송 (늦은 연결 복구)
         if (this._metaJson) {
-          try { ws.send(this._metaJson) } catch {}
+          try { ws.send(this._metaJson) } catch { }
           this.log('  → 캐시된 meta 전송: ' + this._metaJson)
         }
         ws.on('message', data => {
@@ -154,13 +152,13 @@ class MirrorBridge {
   // ── 메인 시작 ────────────────────────────────────────────────
   async start({ serial, maxSize, videoBitrate, fps }) {
     if (this.running) await this.stop()
-    this.serial  = serial
+    this.serial = serial
     this.running = true
 
     try {
       // ─ 기존 좀비 scrcpy 프로세스 제거 (이전 세션 찌꺼기가 소켓을 점거하는 문제 방지)
       this.log('기존 scrcpy 프로세스 정리 중...')
-      await this.adb(['-s', serial, 'shell', 'pkill', '-f', 'com.genymobile.scrcpy']).catch(() => {})
+      await this.adb(['-s', serial, 'shell', 'pkill', '-f', 'com.genymobile.scrcpy']).catch(() => { })
       await new Promise(r => setTimeout(r, 1200))  // Android 프로세스 종료 대기
 
       this.log('STEP 1: WSS 시작...')
@@ -176,9 +174,9 @@ class MirrorBridge {
       this.log('push OK')
 
       this.log('STEP 4: adb forward...')
-      await this.adb(['-s', serial, 'forward', '--remove', `tcp:${FORWARD_PORT}`]).catch(() => {})
-      await this.adb(['-s', serial, 'forward', `tcp:${FORWARD_PORT}`, 'localabstract:scrcpy'])
-      this.log(`forward OK → tcp:${FORWARD_PORT}`)
+      const forwardOut = await this.adb(['-s', serial, 'forward', 'tcp:0', 'localabstract:scrcpy'])
+      this.forwardPort = parseInt(forwardOut.trim(), 10)
+      this.log(`forward OK → tcp:${this.forwardPort}`)
 
       this.log(`STEP 5: scrcpy-server v${ver} 실행...`)
       await this._runServer(serial, ver, maxSize, videoBitrate, fps)
@@ -252,7 +250,7 @@ class MirrorBridge {
       const attempt = () => {
         n++
         this.log(`소켓 연결 시도 ${n}/${maxTries}`)
-        const videoSock = net.connect(FORWARD_PORT, '127.0.0.1')
+        const videoSock = net.connect(this.forwardPort, '127.0.0.1')
         videoSock.setTimeout(3000)
 
         videoSock.on('connect', () => {
@@ -261,7 +259,7 @@ class MirrorBridge {
           this.log('비디오 소켓 연결 성공')
 
           // 즉시 제어 소켓 연결 시도
-          const controlSock = net.connect(FORWARD_PORT, '127.0.0.1')
+          const controlSock = net.connect(this.forwardPort, '127.0.0.1')
           controlSock.setTimeout(3000)
 
           controlSock.on('connect', () => {
@@ -314,17 +312,17 @@ class MirrorBridge {
   //   data        : size bytes (H.264 access unit, Annex B 포맷)
   //
   _pipe(sock) {
-    let state            = 'deviceName'
-    let buf              = Buffer.alloc(0)
+    let state = 'deviceName'
+    let buf = Buffer.alloc(0)
     let pendingFrameSize = 0
-    const meta           = {}
+    const meta = {}
 
     // ── scrcpy v4.0 프로토콜 헤더 상수 ──────────────────────────────────
     // 실측 데이터 분석 결과:
     //   누적 65B 후 코덱(h264) 4B 수신 → device name field = 65 bytes
     //   session_meta = flags(4) + width(4) + height(4) = 12 bytes
-    const DEVICE_NAME_LEN  = 65   // v4.0: 64 bytes name + 1 byte separator
-    const CODEC_ID_LEN     = 4
+    const DEVICE_NAME_LEN = 65   // v4.0: 64 bytes name + 1 byte separator
+    const CODEC_ID_LEN = 4
     const SESSION_META_LEN = 12   // flags(4) + width(4) + height(4)
     const FRAME_HEADER_LEN = 12   // pts(8) + size(4)
 
@@ -346,7 +344,7 @@ class MirrorBridge {
             meta.deviceName = buf.subarray(0, DEVICE_NAME_LEN)
               .toString('utf8').replace(/\0/g, '').trim()
             this.log(`기기 이름: "${meta.deviceName}"`)
-            buf   = buf.subarray(DEVICE_NAME_LEN)
+            buf = buf.subarray(DEVICE_NAME_LEN)
             state = 'codecId'
             break
           }
@@ -356,7 +354,7 @@ class MirrorBridge {
             const codecId = buf.readUInt32BE(0)
             meta.codec = codecId === H264_CODEC_ID ? 'h264' : `0x${codecId.toString(16)}`
             this.log(`코덱: ${meta.codec} (0x${codecId.toString(16)})`)
-            buf   = buf.subarray(CODEC_ID_LEN)
+            buf = buf.subarray(CODEC_ID_LEN)
             state = 'sessionMeta'
             break
           }
@@ -365,10 +363,10 @@ class MirrorBridge {
             if (buf.length < SESSION_META_LEN) { go = false; break }
             // session_meta = flags(4) + width(4) + height(4)
             // flags는 사용하지 않으므로 offset 4, 8에서 width/height 읽기
-            meta.width  = buf.readUInt32BE(4)
+            meta.width = buf.readUInt32BE(4)
             meta.height = buf.readUInt32BE(8)
             this.log(`해상도: ${meta.width}×${meta.height}`)
-            buf   = buf.subarray(SESSION_META_LEN)
+            buf = buf.subarray(SESSION_META_LEN)
             state = 'frameHeader'
             this._metaJson = JSON.stringify({ type: 'meta', ...meta })
             this._frameCnt = 0
@@ -381,7 +379,7 @@ class MirrorBridge {
             // pts: int64 BE — BigInt으로 읽음 (pts=-1 이면 config 패킷)
             // const pts = buf.readBigInt64BE(0)  ← 사용하지 않으나 구조상 존재
             pendingFrameSize = buf.readUInt32BE(8)
-            buf   = buf.subarray(FRAME_HEADER_LEN)
+            buf = buf.subarray(FRAME_HEADER_LEN)
             state = 'frameData'
             break
           }
@@ -395,9 +393,9 @@ class MirrorBridge {
             if (this._frameCnt <= 5 || this._frameCnt % 30 === 0) {
               this.log(`프레임 #${this._frameCnt}: ${pendingFrameSize}B → WS client=${this.wsClient ? '연결됨' : '없음'}`)
             }
-            buf              = buf.subarray(pendingFrameSize)
+            buf = buf.subarray(pendingFrameSize)
             pendingFrameSize = 0
-            state            = 'frameHeader'
+            state = 'frameHeader'
             break
           }
 
@@ -503,10 +501,11 @@ class MirrorBridge {
     this.running = false
     this.adbSock?.destroy(); this.adbSock = null
     this.controlSock?.destroy(); this.controlSock = null
-    this.srvProc?.kill();    this.srvProc = null
-    if (this.serial) {
-      await this.adb(['-s', this.serial, 'forward', '--remove', `tcp:${FORWARD_PORT}`]).catch(() => {})
+    this.srvProc?.kill(); this.srvProc = null
+    if (this.serial && this.forwardPort) {
+      await this.adb(['-s', this.serial, 'forward', '--remove', `tcp:${this.forwardPort}`]).catch(() => { })
       this.serial = null
+      this.forwardPort = null
     }
     this.log('중지됨')
   }

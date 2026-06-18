@@ -48,7 +48,7 @@ $('connectOverlay').addEventListener('click', e => { if (e.target === $('connect
 function setTab(el, tab) {
   document.querySelectorAll('.modal-tab').forEach(t => t.classList.remove('active'))
   el.classList.add('active')
-  $('usbTab').style.display  = tab === 'usb'  ? 'block' : 'none'
+  $('usbTab').style.display = tab === 'usb' ? 'block' : 'none'
   $('wifiTab').style.display = tab === 'wifi' ? 'block' : 'none'
 }
 
@@ -75,7 +75,7 @@ async function refreshDevices() {
 
 function selectDevice(d) {
   state.serial = d.serial
-  state.model  = d.model
+  state.model = d.model
   closeModal()
   setConnected(d.model)
 }
@@ -154,7 +154,7 @@ function closeActivityModal() {
 
 // ── Wi-Fi 연결 ─────────────────────────────────────────────────
 async function connectWifi() {
-  const ip   = $('ipInput').value.trim()
+  const ip = $('ipInput').value.trim()
   const port = $('portInput').value || 5555
   if (!ip) { showToast('IP 주소를 입력하세요', true); return }
   $('connBadge').className = 'conn-badge searching'
@@ -162,7 +162,7 @@ async function connectWifi() {
   const r = await window.db.connect(ip, parseInt(port))
   if (r.ok) {
     state.serial = `${ip}:${port}`
-    state.model  = ip
+    state.model = ip
     closeModal()
     setConnected(ip)
   } else {
@@ -182,7 +182,7 @@ function wifiQuickConnect() {
 
 // ── 미러링 ─────────────────────────────────────────────────────
 // ── 미러링 (WebCodecs + WebSocket) ────────────────────────────
-let mirrorWs    = null   // WebSocket → bridge
+let mirrorWs = null   // WebSocket → bridge
 let videoDecoder = null  // WebCodecs VideoDecoder
 
 function getMirrorCanvas() {
@@ -194,7 +194,7 @@ function getMirrorCanvas() {
     c = document.createElement('canvas')
     c.id = 'mirrorCanvas'
     c.style.cssText = 'width:100%;height:100%;object-fit:contain;border-radius:18px;background:#000;cursor:pointer'
-    
+
     // 숨겨진 키보드 입력용 textarea 생성
     const input = document.createElement('textarea')
     input.id = 'mirrorInput'
@@ -203,7 +203,7 @@ function getMirrorCanvas() {
 
     // 마우스 제어 및 키보드 제어 이벤트 바인딩
     setupCanvasEvents(c, input)
-    
+
     screen.appendChild(c)
   }
   return c
@@ -264,10 +264,24 @@ function setupCanvasEvents(canvas, input) {
     }
   }
 
+  canvas.addEventListener('contextmenu', e => e.preventDefault())
+
   canvas.addEventListener('mousedown', e => {
+    if (e.button === 2) {
+      // 우클릭: 뒤로가기
+      if (mirrorWs && mirrorWs.readyState === 1) {
+        mirrorWs.send(JSON.stringify({ type: 'keycode', action: 0, keycode: 4 })) // DOWN
+        mirrorWs.send(JSON.stringify({ type: 'keycode', action: 1, keycode: 4 })) // UP
+      }
+      return
+    }
     if (e.button !== 0) return // 마우스 좌클릭만 처리
     isDown = true
-    if (input) input.focus()
+    if (input) {
+      input.value = ''
+      sentText = ''
+      input.focus()
+    }
     sendTouchEvent(0, e) // 0 = DOWN
   })
 
@@ -311,73 +325,84 @@ function setupCanvasEvents(canvas, input) {
     'PageDown': 93
   }
 
-  let prevText = ''
+  let sentText = ''
+  let inputTimeout = null
+
+  const syncText = () => {
+    const currText = input.value
+
+    let commonLen = 0
+    while (commonLen < currText.length && commonLen < sentText.length && currText[commonLen] === sentText[commonLen]) {
+      commonLen++
+    }
+
+    const backspacesNeeded = sentText.length - commonLen
+    for (let i = 0; i < backspacesNeeded; i++) {
+      if (mirrorWs && mirrorWs.readyState === 1) {
+        mirrorWs.send(JSON.stringify({ type: 'keycode', action: 0, keycode: 67 }))
+        mirrorWs.send(JSON.stringify({ type: 'keycode', action: 1, keycode: 67 }))
+      }
+    }
+
+    const insertText = currText.substring(commonLen)
+    if (insertText.length > 0 && mirrorWs && mirrorWs.readyState === 1) {
+      mirrorWs.send(JSON.stringify({ type: 'text', text: insertText }))
+    }
+
+    sentText = currText
+  }
+
+  input.addEventListener('input', e => {
+    clearTimeout(inputTimeout)
+    // 60ms 디바운스: 빠른 한글 자모 입력 시 클립보드 레이스 컨디션 방지
+    inputTimeout = setTimeout(syncText, 60)
+  })
 
   input.addEventListener('keydown', e => {
-    if (e.isComposing) return
-
     const keycode = KEYCODE_MAP[e.key]
+    
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      clearTimeout(inputTimeout)
+      syncText()
+
+      if (mirrorWs && mirrorWs.readyState === 1) {
+        mirrorWs.send(JSON.stringify({ type: 'keycode', action: 0, keycode: 66 }))
+        mirrorWs.send(JSON.stringify({ type: 'keycode', action: 1, keycode: 66 }))
+      }
+      
+      input.value = ''
+      sentText = ''
+      return
+    }
+
+    if (e.key === 'Backspace') {
+      if (input.value === '') {
+        e.preventDefault()
+        if (mirrorWs && mirrorWs.readyState === 1) {
+          mirrorWs.send(JSON.stringify({ type: 'keycode', action: 0, keycode: 67 }))
+          mirrorWs.send(JSON.stringify({ type: 'keycode', action: 1, keycode: 67 }))
+        }
+      }
+      return
+    }
+
     if (keycode !== undefined) {
       e.preventDefault()
-      mirrorWs.send(JSON.stringify({ type: 'keycode', action: 0, keycode })) // DOWN
-      if (e.key === 'Backspace' || e.key === 'Enter') {
-        input.value = ''
-        prevText = ''
+      if (mirrorWs && mirrorWs.readyState === 1) {
+        mirrorWs.send(JSON.stringify({ type: 'keycode', action: 0, keycode }))
       }
     }
   })
 
   input.addEventListener('keyup', e => {
-    if (e.isComposing) return
-
     const keycode = KEYCODE_MAP[e.key]
-    if (keycode !== undefined) {
+    if (keycode !== undefined && e.key !== 'Enter' && e.key !== 'Backspace') {
       e.preventDefault()
-      mirrorWs.send(JSON.stringify({ type: 'keycode', action: 1, keycode })) // UP
-    }
-  })
-
-  input.addEventListener('input', e => {
-    const currText = input.value
-    
-    // 조립(Composition) 중인 경우 마지막 글자는 아직 조립 중이므로 제외한 부분만 확정(finalized)으로 간주
-    let finalized = ''
-    if (e.isComposing) {
-      if (currText.length > 1) {
-        finalized = currText.substring(0, currText.length - 1)
-      } else {
-        finalized = ''
-      }
-    } else {
-      finalized = currText
-    }
-
-    // 확정된 문자열이 이전 베이스라인(prevText)보다 늘어났을 때만 Android로 전송 (불필요한 지우기/쓰기 반복 제거)
-    if (finalized.startsWith(prevText)) {
-      const insertText = finalized.substring(prevText.length)
-      if (insertText.length > 0) {
-        mirrorWs.send(JSON.stringify({ type: 'text', text: insertText }))
-        prevText = finalized
+      if (mirrorWs && mirrorWs.readyState === 1) {
+        mirrorWs.send(JSON.stringify({ type: 'keycode', action: 1, keycode }))
       }
     }
-
-    // 조립이 완전히 종료된 영문/숫자/입력 완료 단계에서는 입력창과 베이스라인을 비워줌
-    if (!e.isComposing) {
-      input.value = ''
-      prevText = ''
-    }
-  })
-
-  input.addEventListener('compositionend', e => {
-    const currText = input.value
-    if (currText.startsWith(prevText)) {
-      const insertText = currText.substring(prevText.length)
-      if (insertText.length > 0) {
-        mirrorWs.send(JSON.stringify({ type: 'text', text: insertText }))
-      }
-    }
-    input.value = ''
-    prevText = ''
   })
 }
 
@@ -425,7 +450,7 @@ function clearMirrorLog() {
 
 function stopDecoder() {
   if (videoDecoder && videoDecoder.state !== 'closed') {
-    try { videoDecoder.close() } catch {}
+    try { videoDecoder.close() } catch { }
   }
   videoDecoder = null
   // WebSocket은 여기서 닫지 않음 — stopMirror()에서만 닫음
@@ -438,7 +463,7 @@ function closeMirrorWs() {
 function initDecoder(canvas, width, height) {
   // 기존 디코더만 정리 (WS는 유지)
   stopDecoder()
-  canvas.width  = width  || 1080
+  canvas.width = width || 1080
   canvas.height = height || 1920
   const ctx = canvas.getContext('2d')
 
@@ -465,7 +490,7 @@ function initDecoder(canvas, width, height) {
   // SPS에서 읽은 실제 프로파일: 67 64 00 20 → High Profile Level 3.2
   videoDecoder.configure({
     codec: 'avc1.640020',
-    codedWidth:  canvas.width,
+    codedWidth: canvas.width,
     codedHeight: canvas.height,
     optimizeForLatency: true,
   })
@@ -524,9 +549,9 @@ function feedFrame(uint8) {
   const isKey = hasIDR || hasSPS
   try {
     videoDecoder.decode(new EncodedVideoChunk({
-      type:      isKey ? 'key' : 'delta',
+      type: isKey ? 'key' : 'delta',
       timestamp: performance.now() * 1000,
-      data:      feedData,
+      data: feedData,
     }))
   } catch (e) {
     const logEl = document.getElementById('scrcpyLog')
@@ -535,7 +560,7 @@ function feedFrame(uint8) {
 }
 
 
-function connectMirrorWs(canvas) {
+function connectMirrorWs(canvas, wsPort) {
   if (mirrorWs) { mirrorWs.close(); mirrorWs = null }
 
   // bridge가 준비될 때까지 재시도 (최대 10회, 600ms 간격)
@@ -551,7 +576,7 @@ function connectMirrorWs(canvas) {
   const tryWs = () => {
     if (!state.mirroring) return
     logMirror(`WS 연결 시도 ${attempts + 1}/${MAX}...`)
-    const ws = new WebSocket('ws://127.0.0.1:7183')
+    const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`)
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
@@ -621,7 +646,7 @@ async function startMirror() {
   if (state.mirroring) return
 
   const bitrate = parseInt(document.getElementById('defBitrate')?.value || 8)
-  const fps     = parseInt(document.getElementById('defFps')?.value || 60)
+  const fps = parseInt(document.getElementById('defFps')?.value || 60)
 
   // 로그 패널 초기화
   const logEl = document.getElementById('scrcpyLog')
@@ -638,14 +663,17 @@ async function startMirror() {
   state.mirroring = true
   const canvas = getMirrorCanvas()
 
+  // 동적 웹소켓 포트 요청 및 초기화
+  const wsPort = await window.db.initMirror()
+
   // WS 연결 시도 (bridge보다 먼저 시작 — retry로 버팀)
-  connectMirrorWs(canvas)
+  connectMirrorWs(canvas, wsPort)
 
   // bridge 시작 (jar 푸시 + 서버 실행 + 소켓 연결)
   const r = await window.db.startMirror({
-    serial:       state.serial,
+    serial: state.serial,
     videoBitrate: bitrate,
-    maxSize:      state.maxSize || 0,
+    maxSize: state.maxSize || 0,
     fps,
   })
 
@@ -695,12 +723,12 @@ async function takeScreenshot() {
   showToast('캡처 중...')
   const r = await window.db.screenshot(state.serial)
   if (r.ok) {
-    showToast('저장 완료: ' + r.path)
+    showToast('클립보드에 복사되었습니다 ✓')
     const res = $('captureResult')
     const msg = $('captureMsg')
     if (res) {
       res.style.display = 'block'
-      msg.textContent = '저장됨: ' + r.path
+      msg.textContent = '클립보드에 복사됨'
       msg.style.color = 'var(--accent2)'
     }
   } else {
@@ -713,7 +741,7 @@ async function toggleRecord() {
   if (!requireDevice()) return
   if (!state.recording) {
     const bitrate = parseInt($('recBitrate').value)
-    const size    = $('recSize').value
+    const size = $('recSize').value
     const r = await window.db.recordStart({ serial: state.serial, bitrate, size: size || null })
     if (!r.ok) { showToast('녹화 시작 실패', true); return }
     state.recording = true
@@ -727,7 +755,7 @@ async function toggleRecord() {
       const h = Math.floor(state.seconds / 3600)
       const m = Math.floor((state.seconds % 3600) / 60)
       const s = state.seconds % 60
-      $('timer').textContent = [h,m,s].map(n => String(n).padStart(2,'0')).join(':')
+      $('timer').textContent = [h, m, s].map(n => String(n).padStart(2, '0')).join(':')
     }, 1000)
     showToast('녹화 시작됨')
   } else {
@@ -769,7 +797,7 @@ async function installApk(apkPath) {
   const name = apkPath.split(/[\\/]/).pop()
   const queue = $('installQueue')
   const fillId = 'fill_' + Date.now()
-  const pctId  = 'pct_'  + Date.now()
+  const pctId = 'pct_' + Date.now()
   const item = document.createElement('div')
   item.className = 'install-item'
   item.innerHTML = `<i class="ti ti-package"></i>
@@ -805,7 +833,7 @@ async function pushFileDialog() {
   const paths = await window.db.openFileDialog()
   if (!paths || !paths.length) return
   for (const localPath of paths) {
-    const name       = localPath.split(/[\\/]/).pop()
+    const name = localPath.split(/[\\/]/).pop()
     const remotePath = '/sdcard/Download/' + name
     const r = await window.db.pushFile({ serial: state.serial, localPath, remotePath })
     addFileQueueItem(name, r.ok)
@@ -870,14 +898,14 @@ function changeScreenSize(width) {
   currentScreenWidth = parseInt(width)
   const screen = document.getElementById('phoneScreen')
   if (!screen) return
-  
+
   screen.style.width = currentScreenWidth + 'px'
-  
+
   // 가로세로 비율 계산 (메타 데이터 없으면 기본 9:16.36)
   const aspect = state.aspectRatio || (9 / 16.36)
   const height = currentScreenWidth / aspect
   screen.style.height = Math.round(height) + 'px'
-  
+
   const textEl = document.getElementById('screenSizeText')
   if (textEl) textEl.textContent = currentScreenWidth + 'px'
   localStorage.setItem('db_screen_width', currentScreenWidth)
