@@ -966,3 +966,232 @@ async function runSetupCheck() {
 
 runSetupCheck()
 setInterval(runSetupCheck, 5000) // 기기 연결/해제 자동 반영
+
+// ── 패킷 분석 ──────────────────────────────────────────────────
+const capturedPackets = []
+let proxyRunning = false
+let selectedPacket = null
+
+// PC IP 조회 (페이지 로드시)
+;(async () => {
+  try {
+    const ip = await window.db.proxyGetPcIp()
+    const el = $('pcIpText')
+    if (el) el.textContent = ip
+  } catch {}
+})()
+
+async function startProxy() {
+  if (proxyRunning) return
+  const port = parseInt($('proxyPort')?.value || 8888)
+
+  // 패킷 수신 핸들러 등록
+  window.db.onProxyPacket(packet => {
+    capturedPackets.push(packet)
+    addPacketRow(packet)
+    $('packetCount').textContent = capturedPackets.length + '건'
+  })
+
+  const r = await window.db.proxyStart(port)
+  if (r.ok) {
+    proxyRunning = true
+    $('proxyStatusText').textContent = '캡처 중'
+    $('proxyStatusText').style.color = 'var(--accent2)'
+    $('proxyStartBtn').style.display = 'none'
+    $('proxyStopBtn').style.display = 'flex'
+    showToast('프록시 캡처 시작됨 (포트: ' + port + ')')
+  } else {
+    showToast('프록시 시작 실패: ' + r.message, true)
+  }
+}
+
+async function stopProxy() {
+  await window.db.proxyStop()
+  proxyRunning = false
+  $('proxyStatusText').textContent = '중지됨'
+  $('proxyStatusText').style.color = 'var(--red)'
+  $('proxyStartBtn').style.display = 'flex'
+  $('proxyStopBtn').style.display = 'none'
+  showToast('프록시 캡처 중지됨')
+}
+
+async function setupDeviceProxy() {
+  if (!requireDevice()) return
+  if (!proxyRunning) { showToast('먼저 캡처를 시작하세요', true); return }
+  const port = parseInt($('proxyPort')?.value || 8888)
+  const r = await window.db.proxySetupDevice({ serial: state.serial, proxyPort: port })
+  if (r.ok) {
+    showToast(`기기 프록시 설정 완료 → ${r.pcIp}:${r.proxyPort}`)
+  } else {
+    showToast('기기 프록시 설정 실패: ' + r.message, true)
+  }
+}
+
+async function clearDeviceProxy() {
+  if (!requireDevice()) return
+  const r = await window.db.proxyClearDevice(state.serial)
+  if (r.ok) showToast('기기 프록시 해제됨')
+  else showToast('프록시 해제 실패', true)
+}
+
+async function installCACert() {
+  if (!requireDevice()) return
+  const r = await window.db.proxyInstallCert(state.serial)
+  if (r.ok) {
+    showToast('CA 인증서가 기기에 전송되었습니다. 보안 설정에서 설치해 주세요.')
+  } else {
+    showToast('인증서 전송 실패: ' + r.message, true)
+  }
+}
+
+function clearPackets() {
+  capturedPackets.length = 0
+  $('packetBody').innerHTML = ''
+  $('packetCount').textContent = '0건'
+  closePacketDetail()
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+function addPacketRow(pkt) {
+  const tbody = $('packetBody')
+
+  // 필터 확인
+  const kw = ($('packetFilter')?.value || '').toLowerCase()
+  const mf = $('methodFilter')?.value || ''
+  if (mf && pkt.method !== mf) return
+  if (kw && !(pkt.host + pkt.path + pkt.url).toLowerCase().includes(kw)) return
+
+  const tr = document.createElement('tr')
+  tr.dataset.packetId = pkt.id
+
+  const methodClass = 'method-' + pkt.method.toLowerCase()
+  let statusClass = ''
+  if (pkt.statusCode >= 200 && pkt.statusCode < 300) statusClass = 'status-2xx'
+  else if (pkt.statusCode >= 300 && pkt.statusCode < 400) statusClass = 'status-3xx'
+  else if (pkt.statusCode >= 400 && pkt.statusCode < 500) statusClass = 'status-4xx'
+  else if (pkt.statusCode >= 500) statusClass = 'status-5xx'
+
+  const protoClass = pkt.protocol === 'HTTPS' ? 'proto-https' : 'proto-http'
+  const totalSize = (pkt.requestSize || 0) + (pkt.responseSize || 0)
+  const time = new Date(pkt.timestamp)
+  const timeStr = time.toTimeString().split(' ')[0]
+
+  tr.innerHTML = `
+    <td>${pkt.id}</td>
+    <td class="${protoClass}">${pkt.protocol}</td>
+    <td class="${methodClass}">${pkt.method}</td>
+    <td title="${pkt.url}">${pkt.host}${pkt.path}</td>
+    <td class="${statusClass}">${pkt.statusCode}</td>
+    <td>${formatSize(totalSize)}</td>
+    <td>${timeStr}</td>
+  `
+  tr.onclick = () => showPacketDetail(pkt, tr)
+  tbody.appendChild(tr)
+
+  // 자동 스크롤
+  const wrap = tbody.closest('.packet-table-wrap')
+  if (wrap) wrap.scrollTop = wrap.scrollHeight
+}
+
+function filterPackets() {
+  const tbody = $('packetBody')
+  tbody.innerHTML = ''
+  capturedPackets.forEach(pkt => addPacketRow(pkt))
+  const visibleCount = tbody.querySelectorAll('tr').length
+  $('packetCount').textContent = visibleCount + '건'
+}
+
+function showPacketDetail(pkt, trEl) {
+  selectedPacket = pkt
+
+  // 행 선택 표시
+  document.querySelectorAll('.packet-table tbody tr').forEach(r => r.classList.remove('selected'))
+  if (trEl) trEl.classList.add('selected')
+
+  $('packetDetail').style.display = 'block'
+  $('detailTitle').textContent = `${pkt.method} ${pkt.url}`
+
+  // 기본적으로 Request Headers 표시
+  showDetailTab(document.querySelector('.detail-tab.active') || document.querySelector('.detail-tab'), 'reqHeaders')
+}
+
+function showDetailTab(el, tabId) {
+  document.querySelectorAll('.detail-tab').forEach(t => t.classList.remove('active'))
+  el.classList.add('active')
+
+  const content = $('detailContent')
+  if (!selectedPacket) return
+
+  switch (tabId) {
+    case 'reqHeaders':
+      content.textContent = formatHeaders(selectedPacket.requestHeaders)
+      break
+    case 'resHeaders':
+      content.textContent = formatHeaders(selectedPacket.responseHeaders)
+      break
+    case 'reqBody':
+      content.textContent = formatBody(selectedPacket.requestBody)
+      break
+    case 'resBody':
+      content.textContent = formatBody(selectedPacket.responseBody)
+      break
+  }
+}
+
+function formatHeaders(headers) {
+  if (!headers) return '(없음)'
+  return Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n')
+}
+
+function formatBody(body) {
+  if (!body) return '(비어 있음)'
+  // JSON 포맷팅 시도
+  try {
+    const parsed = JSON.parse(body)
+    return JSON.stringify(parsed, null, 2)
+  } catch {
+    return body
+  }
+}
+
+function closePacketDetail() {
+  $('packetDetail').style.display = 'none'
+  selectedPacket = null
+  document.querySelectorAll('.packet-table tbody tr').forEach(r => r.classList.remove('selected'))
+}
+
+// 원본 APK 선택 및 자동 패치
+async function patchAndInstallApk() {
+  if (!requireDevice()) return
+  
+  const btn = $('patchApkBtn')
+  const originalHtml = btn.innerHTML
+  
+  try {
+    btn.innerHTML = '<i class="ti ti-loader" style="animation: spin 1s linear infinite;"></i>APK 패치 중... (1~3분 소요)'
+    btn.style.opacity = '0.7'
+    btn.disabled = true
+    
+    showToast('파일 다이얼로그를 열고 있습니다...')
+    const res = await window.db.patchAndInstallApk(state.serial)
+    
+    if (res.isCancel) {
+      showToast('취소되었습니다.')
+    } else if (res.ok) {
+      showToast(res.message)
+    } else {
+      showToast('패치 오류: ' + res.message, true)
+    }
+  } catch (err) {
+    showToast('예기치 않은 오류: ' + err.message, true)
+  } finally {
+    btn.innerHTML = originalHtml
+    btn.style.opacity = '1'
+    btn.disabled = false
+  }
+}

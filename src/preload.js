@@ -26,8 +26,10 @@ contextBridge.exposeInMainWorld('db', {
 
   // APK / 파일
   openApkDialog: () => ipcRenderer.invoke('dialog:openApk'),
-  openFileDialog: () => ipcRenderer.invoke('dialog:openFile'),  // ← 신규 추가
+  openFileDialog: () => ipcRenderer.invoke('dialog:openFile'),
   install: (opts) => ipcRenderer.invoke('adb:install', opts),
+  patchAndInstallApk: (serial) => ipcRenderer.invoke('proxy:patch-and-install-apk', serial),
+
   onInstallLog: (cb) => on('adb:install-log', cb),
   pushFile: (opts) => ipcRenderer.invoke('adb:push', opts),
   pullFile: (opts) => ipcRenderer.invoke('adb:pull', opts),
@@ -41,4 +43,16 @@ contextBridge.exposeInMainWorld('db', {
 
   // 세팅
   setupCheck: () => ipcRenderer.invoke('setup:check'),
+
+  // 패킷 분석 프록시
+  proxyStart: (port) => ipcRenderer.invoke('proxy:start', port),
+  proxyStop: () => ipcRenderer.invoke('proxy:stop'),
+  proxySetupDevice: (opts) => ipcRenderer.invoke('proxy:setup-device', opts),
+  proxyClearDevice: (serial) => ipcRenderer.invoke('proxy:clear-device', serial),
+  proxyInstallCert: (serial) => ipcRenderer.invoke('proxy:install-cert', serial),
+  proxyGetPcIp: () => ipcRenderer.invoke('proxy:get-pc-ip'),
+  onProxyPacket: (cb) => {
+    ipcRenderer.removeAllListeners('proxy:packet')
+    ipcRenderer.on('proxy:packet', (_, packet) => cb(packet))
+  },
 })

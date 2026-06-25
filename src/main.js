@@ -4,6 +4,8 @@ const { spawn, execFile, execSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
+const CertManager = require('./cert-manager')
+const ProxyServer = require('./proxy-server')
 
 const isDev = process.argv.includes('--dev')
 let binDir = app.isPackaged
@@ -67,6 +69,8 @@ let adbPath = resolveBin(adbBin)
 let mainWindow = null
 let mirror = null   // MirrorBridge 인스턴스
 let recordingProcess = null
+let proxyServer = null
+let certManager = null
 
 function getMirror() {
   if (!mirror) {
@@ -341,5 +345,152 @@ ipcMain.handle('setup:check', async () => {
     scrcpy: { found: true, version: `server jar ${serverJarExists ? '있음(캐시)' : '없음(자동 다운로드)'}` },
     deviceCount,
     platform,
+  }
+})
+
+// ── 패킷 분석 프록시 IPC ────────────────────────────────────────
+ipcMain.handle('proxy:start', async (_, port) => {
+  try {
+    if (proxyServer) await proxyServer.stop()
+
+    const certDir = path.join(app.getPath('userData'), 'proxy-certs')
+    certManager = new CertManager(certDir)
+    proxyServer = new ProxyServer(certManager, (packet) => {
+      mainWindow?.webContents.send('proxy:packet', packet)
+    })
+    const actualPort = await proxyServer.start(port || 8888)
+    return { ok: true, port: actualPort }
+  } catch (e) {
+    return { ok: false, message: e.message }
+  }
+})
+
+ipcMain.handle('proxy:stop', async () => {
+  if (proxyServer) {
+    await proxyServer.stop()
+    proxyServer = null
+  }
+  return { ok: true }
+})
+
+// 기기에 프록시 설정 (ADB)
+ipcMain.handle('proxy:setup-device', async (_, { serial, proxyPort }) => {
+  try {
+    // PC의 로컬 IP 획득
+    const nets = os.networkInterfaces()
+    let pcIp = '127.0.0.1'
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name]) {
+        if (net.family === 'IPv4' && !net.internal) {
+          pcIp = net.address
+          break
+        }
+      }
+    }
+    await runAdb(['-s', serial, 'shell', 'settings', 'put', 'global', 'http_proxy', `${pcIp}:${proxyPort}`])
+    return { ok: true, pcIp, proxyPort }
+  } catch (e) {
+    return { ok: false, message: String(e) }
+  }
+})
+
+// 기기에서 프록시 해제
+ipcMain.handle('proxy:clear-device', async (_, serial) => {
+  try {
+    await runAdb(['-s', serial, 'shell', 'settings', 'put', 'global', 'http_proxy', ':0'])
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, message: String(e) }
+  }
+})
+
+// CA 인증서를 기기에 push
+ipcMain.handle('proxy:install-cert', async (_, serial) => {
+  try {
+    if (!certManager) {
+      const certDir = path.join(app.getPath('userData'), 'proxy-certs')
+      certManager = new CertManager(certDir)
+    }
+    const certPath = certManager.getCACertPath()
+    await runAdb(['-s', serial, 'push', certPath, '/sdcard/Download/DroidBridge_CA.crt'])
+    // 인증서 파일 경로 권한(Scoped Storage) 문제 회피를 위해, Android 내장 '인증서 설치 파일 선택기' 호출
+    await runAdb(['-s', serial, 'shell', 'am', 'start', '-a', 'android.credentials.INSTALL'])
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, message: String(e) }
+  }
+})
+
+// PC의 로컬 IP 조회
+ipcMain.handle('proxy:get-pc-ip', async () => {
+  const nets = os.networkInterfaces()
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal) {
+        return net.address
+      }
+    }
+  }
+  return '127.0.0.1'
+})
+
+// APK 패치 및 설치 (apk-mitm)
+ipcMain.handle('proxy:patch-and-install-apk', async (_, serial) => {
+  try {
+    // 1. Java 설치 확인
+    try {
+      await new Promise((resolve, reject) => {
+        require('child_process').exec('java -version', (err) => {
+          if (err) reject(new Error('Java가 설치되어 있지 않습니다. PC에 Java(JRE)를 설치해 주세요. (apk-mitm 필수 요구사항)'))
+          else resolve()
+        })
+      })
+    } catch (e) {
+      return { ok: false, message: e.message }
+    }
+
+    // 2. APK 파일 선택
+    const { canceled, filePaths } = await dialog.showOpenDialog(BrowserWindow.getAllWindows()[0], {
+      title: '패치할 원본 APK 파일 선택',
+      properties: ['openFile'],
+      filters: [{ name: 'APK Files', extensions: ['apk'] }]
+    })
+    
+    if (canceled || filePaths.length === 0) return { ok: false, message: '취소됨', isCancel: true }
+    
+    const originalApkPath = filePaths[0]
+    
+    // 3. npx apk-mitm 실행
+    const patchedApkPath = await new Promise((resolve, reject) => {
+      // apk-mitm은 실행된 위치에 '파일명-patched.apk'를 생성함
+      const targetDir = path.dirname(originalApkPath)
+      const apkName = path.basename(originalApkPath)
+      const patchedName = apkName.replace(/\.apk$/i, '-patched.apk')
+      const expectedPatchedPath = path.join(targetDir, patchedName)
+
+      // 이전 패치 파일이 있다면 삭제
+      if (fs.existsSync(expectedPatchedPath)) {
+        fs.unlinkSync(expectedPatchedPath)
+      }
+
+      const execProcess = require('child_process').exec(`npx apk-mitm "${apkName}"`, { cwd: targetDir }, (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(`패치 실패: ${error.message}\n${stderr}`))
+        } else {
+          resolve(expectedPatchedPath)
+        }
+      })
+    })
+
+    // 4. 생성된 패치 파일을 기기에 설치
+    if (!fs.existsSync(patchedApkPath)) {
+      throw new Error('패치된 파일이 생성되지 않았습니다.')
+    }
+    
+    await runAdb(['-s', serial, 'install', '-r', patchedApkPath])
+    
+    return { ok: true, message: '패치 및 기기 설치가 완료되었습니다!' }
+  } catch (e) {
+    return { ok: false, message: String(e) }
   }
 })
