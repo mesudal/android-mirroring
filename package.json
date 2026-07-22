@@ -38,7 +38,14 @@
       "runAfterFinish": true
     },
     "mac": {
-      "target": "dmg"
+      "target": {
+        "target": "dmg",
+        "arch": [
+          "x64",
+          "arm64"
+        ]
+      },
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "linux": {
       "target": "AppImage"
