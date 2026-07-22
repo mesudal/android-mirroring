@@ -53,6 +53,8 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: DroidBridge-${{ matrix.os }}
-          path: dist/DroidBridge*
+          name: 안드로이드_미러링-${{ matrix.os }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
           if-no-files-found: error
