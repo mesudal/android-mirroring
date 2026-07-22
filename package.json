@@ -16,7 +16,7 @@
   },
   "build": {
     "appId": "com.droidbridge.app",
-    "productName": "DroidBridge",
+    "productName": "안드로이드 미러링",
     "directories": {
       "output": "dist"
     },

@@ -23,7 +23,7 @@ const { execFile, spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
 
-const FALLBACK_VER = '4.0'
+const FALLBACK_VER = '4.1'
 const H264_CODEC_ID = 0x68323634  // ASCII "h264"
 
 class MirrorBridge {
