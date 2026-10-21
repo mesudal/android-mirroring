@@ -1,14 +1,17 @@
 {
   "name": "droidbridge",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Android control center powered by scrcpy",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "check": "node --check public/renderer.js && node src/jira.js && node src/hid-keyboard.js && node src/mirror-bridge.js && node src/ios-device.js",
     "build:win": "electron-builder --win --publish never",
-    "build:mac": "electron-builder --mac --publish never",
-    "build:linux": "electron-builder --linux --publish never"
+    "build:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never",
+    "build:linux": "electron-builder --linux --publish never",
+    "release:mac": "CSC_NAME=\"Zero Soft Company Limited (A4FZ48VKPF)\" electron-builder --mac --publish never",
+    "notarize:mac": "set -a && . ./.notarize.env && set +a && npm run release:mac"
   },
   "devDependencies": {
     "electron": "^29.0.0",
@@ -16,10 +19,20 @@
   },
   "build": {
     "appId": "com.droidbridge.app",
-    "productName": "안드로이드 미러링",
+    "productName": "DroidBridge",
     "directories": {
       "output": "dist"
     },
+    "files": [
+      "**/*",
+      "!dist*/**",
+      "!bin/**",
+      "!docs/**",
+      "!.omc/**",
+      "!.notarize.env",
+      "!selfIdentity.plist",
+      "!*.{md,bat,command,ps1}"
+    ],
     "extraResources": [
       {
         "from": "bin/",
@@ -35,7 +48,9 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "shortcutName": "안드로이드 미러링"
     },
     "mac": {
       "target": {
@@ -45,14 +60,25 @@
           "arm64"
         ]
       },
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extendInfo": {
+        "CFBundleDisplayName": "안드로이드 미러링"
+      }
     },
     "linux": {
       "target": "AppImage"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "SungHyun-Ko",
+      "repo": "android-mirroring",
+      "releaseType": "release"
     }
   },
   "dependencies": {
     "apk-mitm": "^1.3.0",
+    "electron-updater": "^6.8.9",
+    "go-ios": "^1.3.2",
     "node-forge": "^1.4.0",
     "ws": "^8.18.0"
   }

@@ -3,6 +3,7 @@ node_modules/
 
 # 빌드 및 출력 폴더 (패키징된 설치 파일 등)
 dist/
+dist-win/
 out/
 
 # 자동 다운로드 및 플랫폼별 실행 바이너리 폴더
@@ -18,3 +19,12 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# 에이전트 도구 로컬 상태 (커밋 대상 아님)
+.omc/
+
+# 공증 자격증명 (로컬 전용)
+.notarize.env
+
+# go-ios 가 만드는 페어링 개인키 (작업 디렉터리에 떨어진다)
+selfIdentity.plist
