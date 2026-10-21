@@ -20,19 +20,18 @@ npm run notarize:mac # 위 + Apple 공증 + staple (외부 배포용, 20분+)
 node src/jira.js          # Jira 모듈 자가진단 (fetch 를 가짜로 바꿔 끼운 assert 스위트)
 node src/hid-keyboard.js  # HID 리포트/디스크립터 자가진단
 node src/mirror-bridge.js # session_meta 레이아웃 판별 자가진단
-node src/ios-device.js    # iOS syslog 파싱·logcat 변환 자가진단
-npm run check             # 위 전부 + renderer.js 문법 검사
+npm run check             # 위 자가진단 + renderer.js 문법 검사
 ```
 
-- **테스트 러너·린트·번들러가 없다.** 검증 수단은 두 가지뿐이다: 위 두 자가진단(`require.main === module` 가드 안의 `assert`)과 `npm run dev` 로 직접 실행. 순수 로직을 새로 추가하면 같은 방식으로 자가진단을 붙이는 것이 이 저장소의 관행이다(Electron 의존이 없어야 단독 실행된다).
+- **테스트 러너·린트·번들러가 없다.** 검증은 위 자가진단(`require.main === module` 가드 안의 `assert`), `npm run check`, `npm run dev` 직접 실행으로 한다. 순수 로직을 새로 추가하면 같은 방식으로 자가진단을 붙인다(Electron 의존이 없어야 단독 실행된다).
 - **런타임 문제는 `app.getPath('userData')/mirror.log` 를 먼저 본다.** 미러링 로그뿐 아니라 **렌더러의 console warn/error 까지** 이 파일로 끌어내 둔다(`main.js` 의 `console-message` 핸들러). 렌더러가 클래식 스크립트 한 덩어리라 예외 하나로 이후 핸들러가 통째로 죽는데, 화면상으로는 멀쩡해 보이기 때문이다. 앱 시작마다 비워진다.
 - **`bin/` 의 adb 바이너리가 없으면 앱은 거의 아무것도 못 한다.** `bin/` 은 gitignore 대상이므로 클론 직후 한 번 채워야 한다: Windows 는 `powershell -File ./Windows_setup.ps1`, macOS/Linux 는 `brew`/`apt` 설치 후 `bin/` 에 심볼릭 링크 (README 참고).
 - `scrcpy-server` jar 은 `bin/` 에 없으면 미러링 첫 실행 시 GitHub 에서 자동 다운로드된다 (폐쇄망이면 미리 넣어둘 것).
-- `docs/TODO.md` 에 **알려진 결함과 미완 작업**이 정리돼 있다 (예: `adb:record-start` 가 실패를 감지하지 못함, 접근 경로 없이 남은 죽은 마크업·CSS). 관련 영역을 건드리기 전에 확인할 것.
+- `docs/TODO.md` 에 **현재 남은 작업**이 정리돼 있다. 완료된 항목은 목록에 남기지 않는다. 관련 영역을 건드리기 전에 확인할 것.
 
 ## 아키텍처
 
-Electron 3-프로세스 구조에, **서로 독립적인 백엔드 5개**가 물려 있다.
+Electron 3-프로세스 구조에 Android 제어·미러링, Jira, 패킷 분석 기능이 연결돼 있다.
 
 ```
 public/renderer.js ──(window.db.*)──> src/preload.js ──(ipcRenderer)──> src/main.js
@@ -43,8 +42,6 @@ MirrorBridge      ProxyServer          jira.js         adb 직접 호출
 mirror-bridge.js  proxy-server.js      Jira Cloud      runAdb / spawn:
 +hid-keyboard.js  +cert-manager.js     REST v2         캡처·녹화·APK·파일·기기정보
 │                                                      + LogCat (→ logcat:data)
-│                 ios-device.js — libimobiledevice: 기기·정보·syslog
-│                 (syslog 를 logcat 형식으로 바꿔 같은 logcat:data 채널로 보낸다)
 adb forward tcp → scrcpy 소켓 파싱 → 로컬 WS
 │
 renderer: WebSocket → WebCodecs VideoDecoder → <canvas>
@@ -65,7 +62,7 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
   - **증상 단서: 해상도 로그에 `2147483648`(=`0x80000000`, 프레임 헤더 PTS 상위 4B)이 보이면 이 블록을 잘못 읽은 것이다.** 프레임 경계까지 밀려 SPS/PPS 가 깨지므로 겉으로는 디코더 쪽 `A key frame is required after configure()` 로 나타나 원인을 놓치기 쉽다.
   - 레이아웃이 왜 갈리는지는 아직 확정하지 못했다. 1순위 후보는 **jar 출처**다 — `ensureJar()` 는 `/opt/homebrew/share/scrcpy/scrcpy-server` 등 **시스템 설치본을 GitHub 다운로드본보다 먼저** 집는다(`mirror-bridge.js:131-135`). brew 로 scrcpy 를 깐 기기는 다른 버전 jar 를 쓰게 된다. 기기 차이는 아니다(같은 SM-G981N 이 양쪽 형태로 관측됐다). 문제가 생기면 로그의 `jar @ ...` 줄부터 볼 것.
   - 세 번째 레이아웃이 나오면 `해상도 파싱 실패 — 헤더 앞 12B: <hex>` 가 로그에 남는다. 그 hex 를 자가진단 케이스로 추가하면 된다.
-- 비디오 소켓과 제어 소켓은 **같은 forward 포트로 순서대로 두 번 connect** 해서 얻는다. 둘 다 성공해야 스트리밍이 시작된다. `controlSock` 은 현재 **쓰기 전용**이다 — 역방향 스트림(기기 클립보드 응답 등)은 아직 아무도 읽지 않는다.
+- 비디오 소켓과 제어 소켓은 **같은 forward 포트로 순서대로 두 번 connect** 해서 얻는다. 둘 다 성공해야 스트리밍이 시작된다. `controlSock` 은 제어 메시지를 쓰고 Android에서 오는 역방향 클립보드 메시지도 버퍼링해 읽는다.
 - 디코더 코덱이 `avc1.640020` 으로 하드코딩되어 있고, config 패킷(SPS+PPS)은 `configNalBuffer` 에 캐시해뒀다가 IDR 앞에 수동으로 붙여야 한다 (`feedFrame()`). VideoDecoder 는 description 없이 config 만으로는 디코딩하지 못한다.
 - jar 버전 문자열은 `app_process` 인자로 그대로 넘어가고 **서버가 자기 버전과 다르면 기동을 거부한다** (`IllegalArgumentException: The server version (4.1) does not match the client (...)`). 버전은 ① `ensureJar()` 의 다운로드 경로가 알려준 값 → ② `_jarVer()` 의 파일명 파싱 → ③ `_probeJarVer()` 가 서버에 직접 물어본 값 순으로 정해진다. ③ 덕분에 파일명에 버전이 없는 jar(`Windows_setup.ps1` 이 zip 에서 복사한 것, brew 설치본)도 그냥 동작하므로 **리네임은 필요 없다.** `FALLBACK_VER` 는 ③까지 실패했을 때만 쓰이는 최후값이라 정확할 필요가 없다.
 - 시작 시 기기의 좀비 scrcpy 프로세스를 `pkill` 로 정리하고, 서버 기동 후 abstract socket 바인딩까지 1.5초를 더 기다린다 — 이 대기를 줄이면 소켓 연결이 간헐적으로 실패한다.
@@ -81,7 +78,13 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
   - 한/영·한자(`Lang1`/`Lang2` = 0x90/0x91)는 scrcpy 기본 디스크립터 범위(0x65) 밖이라 `EXTENDED_MAX_USAGE` 디스크립터를 직접 만들어 쓴다. 이때 **Logical Maximum 은 2바이트 형식(`0x26 lo hi`)이어야 한다** — 1바이트(`0x25`)로 두면 0x91 이 음수로 읽혀 디스크립터가 조용히 망가진다. Windows 는 이 토글 키에 `keyup` 을 주지 않아 눌림 집합에서 직접 떼어낸다(`TAP_ONLY`).
   - 클립보드 폴백: scrcpy 의 `TYPE_INJECT_TEXT` 는 한글을 주입하지 못하므로 `TYPE_SET_CLIPBOARD(9) + paste:true` 를 쓴다. 숨은 `textarea` 값을 60ms 디바운스 후 이전 전송분과 공통 접두사 비교 → 차이만큼 백스페이스 + 나머지 붙여넣기 (`syncText()`). **이 디바운스와 순서가 한글 조합 레이스 컨디션("기서서" 현상)의 핵심이므로 임의로 줄이지 말 것.** 저장소에서 가장 취약한 로직이며 폐기 검토 중이다 (`docs/TODO.md` 2번).
 
-### 3. LogCat / 현재 앱 / Jira (QA 고리)
+**클립보드 공유와 키보드 폴백은 별개다.** 미러링 중 PC 클립보드는 500ms 간격으로 확인해 Android와 동기화하고, 기기의 클립보드 메시지는 제어 소켓에서 읽어 PC에 반영한다. scrcpy 시퀀스 번호로 에코를 걸러내며, 텍스트만 지원하고 1MiB를 넘는 텍스트는 무시한다. 키보드 입력 폴백은 기존처럼 scrcpy 클립보드 붙여넣기를 사용한다.
+
+### 3. 화면 녹화
+
+`adb:record-start` 는 ADB 프로세스가 실행 직후 종료되거나 `spawn`에 실패하면 오류를 반환한다. 녹화 중에는 경과 시간과 STOP 동작을 표시한다. 종료할 때는 기기 `screenrecord`에 SIGINT를 보내 종료가 끝날 때까지 기다린 뒤 저장 대화상자를 띄우고, 저장된 파일 경로를 화면에 계속 보여준다. 최대 녹화 시간은 3분이다. 종료 대기 제한은 15초이며 초과하면 저장 파일이 불완전할 수 있음을 알린다.
+
+### 4. LogCat / 현재 앱 / Jira (QA 고리)
 
 `adb logcat -v threadtime -T 200` 을 spawn 해 `logcat:data` 청크로 흘린다. 렌더러 쪽 제약이 촘촘하다:
 
@@ -90,28 +93,6 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
 - Activity 폴링으로 얻은 포그라운드 패키지를 기준으로 `app:info` / `app:action`(force-stop·clear·재실행)이 동작한다.
 
 Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF JSON 으로만 받아 QA 리포트 평문을 넣을 수 없다. 토큰은 `safeStorage` 로 암호화해 `userData/jira.json`(mode 0600)에 두고 **렌더러로는 절대 돌려보내지 않는다**(`hasToken` 불리언만). `jira:open` 은 atlassian.net / id.atlassian.com 만 허용하는 화이트리스트가 걸려 있다. 스코프형 토큰이면 사이트 주소가 401 이라 `api.atlassian.com/ex/jira/<cloudId>` 게이트웨이로 폴백하고 그 경로를 캐시한다 — 이 분기는 자가진단이 덮고 있다.
-
-### 4. iOS 지원 범위 (`src/ios-device.js`)
-
-**기기 인식 · 기기 정보 · 실시간 syslog · 화면 캡처까지 한다. 화면 미러링과 입력 주입은 지원하지 않는다.** CLI 를 spawn 하는 얇은 래퍼이고, Android 쪽 코드(`mirror-bridge.js` / `hid-keyboard.js`)는 건드리지 않는다.
-
-도구가 둘로 갈린다: 기기·정보·syslog 는 **libimobiledevice**(`idevice_id` / `ideviceinfo` / `idevicesyslog`), 캡처는 **go-ios**(npm 의존, `node_modules/go-ios/bin/ios`)다. 경로 체계가 달라 `bin()` 이 go-ios 만 따로 처리한다 — `resolveBin` 은 `bin/` 과 시스템 PATH 만 뒤진다.
-
-- **syslog 를 logcat threadtime 형식으로 변환해 기존 `logcat:data` 채널로 흘린다.** 렌더러가 `LOGCAT_PARSE_RE` 하나로 모든 줄을 읽으므로 레벨·태그·PID 필터와 검색이 그대로 재사용된다. 새 이벤트 채널을 만들지 말 것.
-- **물량이 Android 와 다르다.** 필터 없이 초당 약 1,300줄, `--quiet` 로도 초당 약 390줄이라 `LOGCAT_MAX_LINES`(3,000)를 몇 초면 넘긴다. 프로세스를 지정하면 초당 49줄까지 떨어진다. `-p` 와 `-q` 는 **같이 못 쓴다**(idevicesyslog 가 거부, include/exclude 상호배타).
-- iOS 는 포그라운드 앱을 알 수 없어 Android 의 '현재 실행중인 앱' 필터 대신 프로세스를 직접 고른다(`idevicesyslog pidlist`). 기기 제어 툴바는 전부 adb 전용이라 iOS 에서는 감춘다.
-- Windows 는 **Apple Devices 앱(또는 iTunes)** 이 `Apple Mobile Device Service` 로 usbmuxd 역할을 한다. 없으면 도구가 기기를 못 찾는다.
-
-**미러링을 다시 검토한다면 아래는 이미 시도해서 막힌 길이다 (2026-09-17 실측):**
-
-- **CMIO/DAL 캡처** — Apple 이 DAL 플러그인 지원을 제거했다. `kCMIOHardwarePropertyAllowScreenCaptureDevices` 설정은 성공(status 0)하는데 기기가 캡처 장치로 나타나지 않고, `/Library/CoreMediaIO/Plug-Ins/DAL/` 은 비어 있으며 시스템 쪽 디렉터리는 아예 없다.
-- **macOS 내장 AirPlay 수신기 창 캡처** — 수신은 되지만(포트 7000 ESTABLISHED, AWDL 피어투피어) 화면이 **창으로도 디스플레이로도 열거되지 않는다.** 전용 Space 에 비공개 합성되어 `desktopCapturer` 로 잡을 대상이 없다. 전체화면을 점령해 다른 작업도 막는다.
-- **iPhone Mirroring(연속성)** — 같은 Apple ID 필수, API 없음.
-- **go-ios MJPEG** (`ios screenshot --stream`) — **동작한다.** `ios tunnel start --userspace` 는 root 도 필요 없어 앱이 직접 spawn 할 수 있고, `multipart/x-mixed-replace` 라 `<img>` 한 줄로 표시된다. 다만 **약 2.6fps**(프레임당 243KB)라 슬라이드쇼 수준이다. DVT 스크린샷 서비스를 반복 호출하는 구조라 구조적 한계다.
-- 60fps 를 내려면 기기의 하드웨어 H.264 인코더를 써야 하고, 경로는 AirPlay 수신기 직접 구현 또는 QuickTime USB 프로토콜 직접 구현뿐이다. 둘 다 수 주 규모이며 기성 Node 라이브러리가 없다(`quicktime_video_hack` 은 2022-08 이후 방치, npm 의 AirPlay 구현은 오디오 전용).
-- 스크린샷은 **go-ios + userspace 터널**로 현재 화면을 찍는다. iOS 17+ 는 스크린샷 서비스(DVT)가 개발자 터널을 통해야 열리는데, `ios tunnel start --userspace` 는 **root 가 필요 없어** 앱이 직접 띄운다(`ensureTunnel()`). 테스터는 아무 설정도 하지 않는다. 실측 첫 캡처 2.1초(터널 기동 포함), 이후 0.8초.
-  - 터널 생존 확인은 우리 프로세스 핸들이 아니라 `ios tunnel ls` 로 한다 — 밖에서 죽거나 다른 창이 이미 띄워뒀을 수 있다.
-  - AFC(`afcclient get DCIM/…`)로 기기에 저장된 스크린샷 파일을 꺼내는 방식도 터널 없이 동작하지만 **현재 화면이 아니라 과거 파일**이라 폐기했다. 캡처 버튼의 의미와 맞지 않는다.
 
 ### 5. 패킷 분석 프록시 (`src/proxy-server.js`, `src/cert-manager.js`)
 
@@ -136,7 +117,7 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 
 - `.github/workflows/build.yml` — main/master push 또는 수동 실행 시 windows+macos 매트릭스 빌드. Windows 잡은 빌드 전에 `Windows_setup.ps1` 로 바이너리를 받아 패키지에 포함시키고, macOS 잡은 빈 `bin/` 만 만든다(=배포된 dmg 는 사용자 PC 의 brew adb 에 의존한다). `v*` 태그 푸시는 버전 일치 확인 후 Windows 설치파일·`latest.yml`·`.blockmap` 을 GitHub Release 에 게시한다. Windows 앱은 `electron-updater` 로 공개 GitHub Release 를 확인한다. macOS 앱 내 업데이트는 아직 지원하지 않는다.
 - `bin/` 은 `extraResources` 로 패키지에 통째로 들어간다.
-- **asar 에 넣을 파일은 `build.files` 의 제외 목록으로 거른다.** electron-builder 는 자기 출력 폴더(`dist/`)만 자동으로 빼고 나머지는 저장소 루트를 통째로 담는다. 출력 경로를 바꿨다 되돌리며 남은 `dist-win/`(옛 설치파일)가 들어가 설치파일이 87MB → 274MB 로 부푼 적이 있다. 그래서 `dist*/` 를 통째로 막는다 — 출력 폴더를 바꿔 빌드하면 이번엔 원래 `dist/` 가 들어가기 때문이다. 같은 이유로 `bin/`(이미 `extraResources` 로 들어감 — 패키징 상태에선 `resourcesPath/bin` 만 쓴다), `docs/`, `.omc/`(에이전트 세션 기록), 문서·스크립트도 뺐다. **electron-builder 는 `.gitignore` 를 보지 않고 점(.)으로 시작하는 파일도 담는다** — 그래서 루트에 떨어지는 비밀 파일 `.notarize.env`(공증 자격증명)와 `selfIdentity.plist`(go-ios 페어링 개인키)를 따로 막아 두었다. gitignore 에 비밀 파일을 추가할 때는 여기도 같이 추가할 것. 루트에 새 폴더를 만들면 여기에 추가할지 확인하고, 빌드 후 `npx asar list dist/win-unpacked/resources/app.asar` 최상위가 `node_modules · src · public · package.json` 뿐인지 본다.
+- **asar 에 넣을 파일은 `build.files` 의 제외 목록으로 거른다.** electron-builder 는 자기 출력 폴더(`dist/`)만 자동으로 빼고 나머지는 저장소 루트를 통째로 담는다. 출력 경로를 바꿨다 되돌리며 남은 `dist-win/`(옛 설치파일)가 들어가 설치파일이 87MB → 274MB 로 부푼 적이 있다. 그래서 `dist*/` 를 통째로 막는다 — 출력 폴더를 바꿔 빌드하면 이번엔 원래 `dist/` 가 들어가기 때문이다. 같은 이유로 `bin/`(이미 `extraResources` 로 들어감 — 패키징 상태에선 `resourcesPath/bin` 만 쓴다), `docs/`, `.omc/`(에이전트 세션 기록), 문서·스크립트도 뺐다. **electron-builder 는 `.gitignore` 를 보지 않고 점(.)으로 시작하는 파일도 담는다** — 루트에 새 비밀 파일을 추가하면 패키징 제외 목록에도 넣는다. 루트에 새 폴더를 만들면 여기에 추가할지 확인하고, 빌드 후 `npx asar list dist/win-unpacked/resources/app.asar` 최상위가 `node_modules · src · public · package.json` 뿐인지 본다.
 
 ### macOS 서명 / 공증
 
@@ -168,5 +149,4 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 
 - **`productName` 을 한글로 되돌리지 말 것.** 한때 `"안드로이드 미러링"` 이었고, 그 상태로 만든 .app 은 기동 즉시 SIGTRAP(exit 133)으로 죽었다. 메시지는 `FATAL:electron_main_delegate_mac.mm(67)] Unable to find helper app` — Electron 이 **CFBundleName** 으로 헬퍼 앱 경로를 조립하는데 비ASCII 이름이 디스크상 이름과 맞지 않는다. `npm start`(개발 실행)는 멀쩡하므로 **패키징해서 실행해 보기 전에는 드러나지 않는다.**
   지금은 `productName: "DroidBridge"` 로 두고 표시 이름만 한글로 준다 — macOS 는 `mac.extendInfo.CFBundleDisplayName`, Windows 는 `nsis.shortcutName`. `CFBundleName` 까지 한글로 덮으면 같은 이유로 다시 죽으므로 **`CFBundleDisplayName` 만** 바꿔야 한다. (`userData` 경로는 `package.json` 의 `name`(=`droidbridge`)에서 오므로 이 변경에 영향받지 않는다.)
-- **npm 11 은 postinstall 을 차단한다 — `electron` 과 `go-ios` 둘 다 걸린다.** `npm install` 이 exit 0 여도 바이너리가 안 받아진다. go-ios 는 `node node_modules/go-ios/postinstall.js install` 로 따로 받는다(끝에 에러를 뱉어도 `bin/ios` 가 만들어졌으면 된 것이다). electron 은 아래 방법으로 받는다.
-- **electron 바이너리 받기.** `npm install` 이 exit 0 여도 `node_modules/electron/dist/` 에 라이선스 파일만 남고 바이너리가 없다. `node node_modules/electron/install.js` 로 따로 받아야 하는데, 이때 `extract-zip` 이 첫 파일에서 멈추므로 캐시된 zip(`~/Library/Caches/electron/*/electron-v*.zip`)을 `ditto -x -k` 로 직접 풀고 `path.txt` 에 `Electron.app/Contents/MacOS/Electron` 을 써 주면 된다.
+- **npm 11 은 postinstall 을 차단할 수 있다.** `npm install` 이 성공해도 `node_modules/electron/dist/` 에 라이선스 파일만 남고 바이너리가 없으면 `node node_modules/electron/install.js` 로 따로 받아야 한다. macOS 에서 `extract-zip` 이 첫 파일에서 멈추면 캐시된 zip(`~/Library/Caches/electron/*/electron-v*.zip`)을 `ditto -x -k` 로 풀고 `path.txt` 에 `Electron.app/Contents/MacOS/Electron` 을 쓴다.

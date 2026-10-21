@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld('db', {
   setMinSize: (w, h) => ipcRenderer.invoke('window:set-min-size', w, h),
   recordStart: (opts) => ipcRenderer.invoke('adb:record-start', opts),
   recordStop: (serial) => ipcRenderer.invoke('adb:record-stop', serial),
+  onRecordEnded: (cb) => {
+    ipcRenderer.removeAllListeners('adb:record-ended')
+    ipcRenderer.on('adb:record-ended', (_, status) => cb(status))
+  },
 
   // APK / 파일
   openApkDialog: () => ipcRenderer.invoke('dialog:openApk'),
@@ -40,9 +44,7 @@ contextBridge.exposeInMainWorld('db', {
   pushFile: (opts) => ipcRenderer.invoke('adb:push', opts),
   pullFile: (opts) => ipcRenderer.invoke('adb:pull', opts),
 
-  // 클립보드 / 키
-  clipboardSend: (opts) => ipcRenderer.invoke('adb:clipboard-send', opts),
-  clipboardGet: (serial) => ipcRenderer.invoke('adb:clipboard-get', serial),
+  // 키
   keyevent: (opts) => ipcRenderer.invoke('adb:keyevent', opts),
   getCurrentActivity: (serial) => ipcRenderer.invoke('adb:current-activity', serial),
   getActivityInfo: (serial, activityName) => ipcRenderer.invoke('adb:activity-info', { serial, activityName }),
@@ -83,14 +85,6 @@ contextBridge.exposeInMainWorld('db', {
     ipcRenderer.removeAllListeners('logcat:stopped')
     ipcRenderer.on('logcat:stopped', () => cb())
   },
-
-  // iOS (libimobiledevice) — syslog 는 위 onLogcatData 로 함께 들어온다.
-  // 모듈이 logcat 형식으로 변환해 보내므로 채널과 리스너를 공유한다.
-  iosDevices: () => ipcRenderer.invoke('ios:devices'),
-  iosInfo: (udid) => ipcRenderer.invoke('ios:info', udid),
-  iosScreenshot: (udid) => ipcRenderer.invoke('ios:screenshot', udid),
-  iosSyslogStart: (opts) => ipcRenderer.invoke('ios:syslog-start', opts),
-  iosSyslogStop: () => ipcRenderer.invoke('ios:syslog-stop'),
 
   // 패킷 분석 프록시
   proxyStart: (port) => ipcRenderer.invoke('proxy:start', port),

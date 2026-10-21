@@ -2,16 +2,16 @@
 
 - 작성일: 2026-09-16
 - 대상: DroidBridge (`android-mirroring`)
-- 상태: 설계 확정 대기
+- 상태: 구현 완료
 
 ## 1. 배경
 
-미러링 화면에서 타이핑한 글자를 단말로 보낼 때, 현재는 **클립보드를 경유**한다.
+설계 당시 미러링 화면의 키 입력은 **클립보드를 경유**했다. 현재 구현은 UHID를 기본으로 사용하고, UHID를 쓸 수 없는 기기에서만 예전 클립보드 입력 방식으로 폴백한다.
 [`mirror-bridge.js`](../../../src/mirror-bridge.js)의 `injectText()` 가 scrcpy 제어 메시지
 `TYPE_SET_CLIPBOARD(9)` 를 `paste: true` 로 보내 단말 클립보드에 쓰고 곧바로 붙여넣는다.
 
 scrcpy 기본 텍스트 주입(`TYPE_INJECT_TEXT`)이 ASCII만 지원해 한글을 넣지 못하기 때문에
-택한 우회로이고, **기능적으로는 지금도 정상 동작한다.** Android 16 / SM-S926N 실측에서
+택한 우회로였고, **당시 기능적으로 정상 동작했다.** Android 16 / SM-S926N 실측에서
 키코드·ASCII·한글 주입이 모두 성공했고 `Device clipboard set` 외 예외는 없었다.
 
 문제는 부작용이다.
@@ -36,7 +36,7 @@ scrcpy 기본 텍스트 주입(`TYPE_INJECT_TEXT`)이 ASCII만 지원해 한글�
 **비목표**
 
 - 마우스 UHID 전환 (현행 `TYPE_INJECT_TOUCH_EVENT` 로 충분, 건드리지 않는다)
-- 클립보드 탭 기능(`clipboardSend` / `clipboardGet`) 변경
+- PC와 Android 간 자동 클립보드 동기화 변경
 - 게임 패드·멀티 디스플레이 등 scrcpy의 여타 UHID 용도
 
 ## 3. 접근
@@ -45,8 +45,8 @@ UHID(`/dev/uhid`)로 **물리 HID 키보드를 흉내** 낸다. Android API 주�
 클립보드를 건드리지 않고, 한글 조합은 단말의 IME가 담당한다. 실제 USB 키보드를 꽂았을 때와
 동일한 동작이다.
 
-결과적으로 **PC는 스캔코드만 보내고 문자 조합은 단말이 한다.** 사용자는 Windows 한글 IME를
-끄고 영문 상태로 타이핑하며, 단말의 삼성/구글 키보드가 `ㅎ+ㅏ+ㄴ` → `한` 을 만든다.
+결과적으로 **PC는 스캔코드만 보내고 문자 조합은 단말이 한다.** 단말의 삼성/구글 키보드가
+`ㅎ+ㅏ+ㄴ` → `한` 을 만든다. 캔버스에 포커스를 두므로 PC의 한글 IME를 끌 필요는 없다.
 
 ## 4. 구성
 
@@ -220,4 +220,4 @@ UHID 연결 중에는 단말의 **화면 키보드가 뜨지 않는다.** 물리
 무변경 src/preload.js, src/main.js
 ```
 
-`injectText()` 와 `syncText()` 는 폴백 경로로 남으므로 삭제하지 않는다.
+`injectText()` 와 `syncText()` 는 UHID를 사용할 수 없는 기기의 키보드 폴백으로 유지한다. PC와 Android의 텍스트 클립보드 자동 동기화는 별도 기능이며, 키 입력을 위한 클립보드 폴백과 혼동하지 않는다.

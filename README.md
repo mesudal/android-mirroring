@@ -1,7 +1,7 @@
 # DroidBridge
 
 Android 기기를 PC 한 창에서 미러링·제어하면서 LogCat 을 보고, 그 자리에서 Jira 백로그까지 올리는 QA 용 데스크탑 앱입니다. (Electron + adb / scrcpy-server)
-Windows / macOS / Linux 지원 · iOS 는 기기 정보·로그·화면 캡처까지 ([아래](#ios-제한-지원) 참고)
+Windows / macOS / Linux 지원
 
 ![DroidBridge 실행 화면](docs/screenshot.png)
 
@@ -15,7 +15,8 @@ Windows / macOS / Linux 지원 · iOS 는 기기 정보·로그·화면 캡처�
 | 기기 버튼 | 화면 위 아이콘 툴바 — 뒤로·홈·최근 앱 / 전원·볼륨 ± | |
 | 보기 회전 | 툴바의 좌로 회전 · 우로 회전 | 기기는 그대로 두고 화면만 돌립니다. 세로 고정 앱도 눕혀 볼 수 있습니다 |
 | 화면 캡처 | 툴바 카메라 → 미리보기에서 **파일 저장** / **클립보드 복사** | 슬랙 등에 바로 붙여넣기 |
-| 화면 녹화 | 툴바 **REC** | MP4, 1회 최대 3분 (Android 제한) |
+| 화면 녹화 | 툴바 **REC**로 시작, **STOP**으로 종료 | 진행 시간과 저장 중 상태를 표시하고, 저장 후 경로를 화면에 계속 보여 줍니다. MP4, 최대 3분 |
+| 클립보드 공유 | PC 또는 Android에서 텍스트 복사 | 미러링 중 텍스트 클립보드를 양방향 자동 동기화 |
 | APK 설치 | 앱 창 어디에나 `.apk` 를 끌어다 놓기 | 설치 확인 후 설치, 여러 개 한 번에 가능 |
 | 파일 전송 | 기기 화면에 파일을 끌어다 놓기 | 기기의 `/sdcard/Download/` 로 들어갑니다 |
 | LogCat | 오른쪽 패널 | [아래](#logcat) 참고 |
@@ -34,6 +35,7 @@ adb 가 설치파일에 들어 있어 따로 설치할 것이 없습니다.
 > **"Windows의 PC 보호" 창이 뜨면** — 코드 서명을 하지 않은 설치파일이라 그렇습니다. **추가 정보 → 실행** 을 누르면 됩니다.
 
 프로그램은 실행 후 새 버전을 자동 확인합니다. 업데이트가 있으면 다운로드 여부를 묻고, 내려받은 뒤 지금 재시작하거나 앱 종료 시 설치할 수 있습니다. 설정 탭의 **업데이트 확인**으로 수동 확인도 가능합니다. 자동 업데이트는 GitHub Release에 배포된 Windows 버전에서 지원합니다. 자동 업데이트가 없는 기존 설치본은 새 버전 설치파일을 한 번 직접 실행해 업데이트해야 합니다.
+현재 실행 중인 버전은 프로그램 창 제목 뒤에 `v1.0.3` 형식으로 표시됩니다.
 
 ### macOS
 
@@ -63,16 +65,6 @@ brew install android-platform-tools
 
 앱 왼쪽 아래 **기기 연결** 로 연결합니다.
 
-### iOS (제한 지원)
-
-iPhone 도 연결되지만 **기기 정보 · 로그 · 화면 캡처까지**입니다. 화면 미러링과 터치·키 입력은 지원하지 않아 툴바에는 캡처만 남습니다.
-
-- 로그는 Flutter 앱(`Runner`)의 출력과 크래시 기록만 받습니다. 필터에서 *시스템 로그까지 전부* 로 넓힐 수 있습니다
-- 캡처 첫 회는 기기와 연결 통로를 여느라 몇 초 걸리고, 이후엔 1초 안팎입니다
-- 준비물
-  - macOS: `brew install libimobiledevice`
-  - Windows: Apple Devices 앱(또는 iTunes)과 libimobiledevice 도구(`idevice_id.exe` 등)가 필요합니다. **Windows 설치파일에는 libimobiledevice 가 들어 있지 않습니다**
-
 ## LogCat
 
 | 하고 싶은 것 | 방법 |
@@ -88,6 +80,14 @@ iPhone 도 연결되지만 **기기 정보 · 로그 · 화면 캡처까지**입
 - 스크롤을 맨 아래에 두면 새 로그를 따라가고, 위로 올려 두면 그 자리에 멈춰 있습니다.
 - 화면에는 **최근 3,000줄**만 남깁니다(오래된 줄부터 지움). 오래 지켜봐야 하면 중간중간 **파일로 저장** 하세요.
 - *현재 앱만 보기* 상태에서 앱이 바뀌면 이전 앱 로그는 지워진 게 아니라 **숨겨진 것**입니다. *전체 로그 보기* 로 돌리면 보입니다.
+
+## 클립보드 공유
+
+미러링이 켜져 있는 동안 텍스트 클립보드가 자동으로 양방향 동기화됩니다. PC에서 복사한 글은 Android 클립보드에 들어가고, Android에서 복사한 글은 PC 클립보드에 들어옵니다. 사진·파일 같은 텍스트가 아닌 항목은 동기화하지 않습니다.
+
+## 화면 녹화
+
+툴바에서 **REC**를 누르면 녹화가 시작되고, 경과 시간이 화면에 표시됩니다. **STOP**을 누르면 녹화를 마친 뒤 저장 위치를 선택합니다. 저장이 끝나면 저장 경로가 화면에 남아 다시 확인하거나 복사할 수 있습니다. 한 번에 최대 3분까지 녹화할 수 있습니다.
 
 ## Jira 백로그 등록
 
@@ -134,7 +134,7 @@ iPhone 도 연결되지만 **기기 정보 · 로그 · 화면 캡처까지**입
     ```
   - 경고 자체를 없애려면 배포 담당자가 `npm run notarize:mac` 으로 공증된 빌드를 올려야 합니다.
 
-**알려진 제약**: 클립보드 공유는 양방향 자동 동기화로 바꾸는 중이라 지금은 화면에서 내려가 있습니다. 그 밖의 결함과 미완 작업은 [docs/TODO.md](docs/TODO.md) 에 있습니다.
+**알려진 제약**: 클립보드 동기화는 미러링 중 텍스트만 지원하며, PC 클립보드 변경은 짧은 주기로 확인합니다. 그 밖의 미완 작업은 [docs/TODO.md](docs/TODO.md) 에 있습니다.
 
 ## 개발
 
@@ -193,7 +193,7 @@ npm run build:linux   # Linux AppImage
 
 `bin/` 이 설치파일에 그대로 들어가므로 **Windows 는 `Windows_setup.ps1` 로 채운 뒤 빌드**해야 adb 가 포함됩니다. macOS 는 **`Mac_설치파일_만들기.command`** 더블클릭으로도 dmg 를 만들 수 있습니다. 서명·공증 세부는 [CLAUDE.md](CLAUDE.md) 의 *빌드 / 배포* 항목을 보세요.
 
-Windows 업데이트를 배포하려면 `package.json` 버전을 올리고 `v<버전>` 태그(예: `v1.0.2`)를 푸시합니다. GitHub Actions가 버전과 태그가 일치하는지 확인한 뒤 Windows 설치파일, `latest.yml`, `.blockmap`을 GitHub Release에 게시합니다. 기존 브랜치 빌드와 수동 빌드는 CI artifact만 만들며 자동 업데이트 배포로 취급되지 않습니다.
+Windows 업데이트를 배포하려면 `package.json` 버전을 올리고 `v<버전>` 태그(예: `v1.0.3`)를 푸시합니다. GitHub Actions가 버전과 태그가 일치하는지 확인한 뒤 Windows 설치파일, `latest.yml`, `.blockmap`을 `mesudal/android-mirroring` GitHub Release에 게시합니다. 기존 브랜치 빌드와 수동 빌드는 CI artifact만 만들며 자동 업데이트 배포로 취급되지 않습니다.
 
 ### 프로젝트 구조
 
@@ -206,7 +206,6 @@ android-mirroring/
 │   ├── preload.js        # 렌더러에 노출하는 IPC 브리지 (contextBridge)
 │   ├── mirror-bridge.js  # scrcpy-server 구동, 영상·제어 소켓 → 로컬 WebSocket 중계
 │   ├── hid-keyboard.js   # UHID 키보드 리포트 (한/영 키 포함)
-│   ├── ios-device.js     # iOS 기기·정보·syslog(libimobiledevice), 캡처(go-ios)
 │   ├── jira.js           # Jira Cloud REST v2
 │   ├── proxy-server.js   # 패킷 분석용 MITM 프록시 (현재 화면에서는 숨김)
 │   └── cert-manager.js   # 프록시용 인증서 발급
