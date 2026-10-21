@@ -1,13 +1,11 @@
 // ── 전역 상태 ──────────────────────────────────────────────────
 const state = {
   viewRot: 0,           // 보기 회전 — 기기가 아니라 우리 렌더링만 90°씩 돌린다 (0/1/2/3)
-  // 'android' | 'ios'. iOS 는 미러링·입력 경로가 없어(화면은 AirPlay 수신기 창,
-  // 입력은 주입 불가) 연결 후 동작이 갈린다. state.serial 에는 UDID 가 들어간다.
-  platform: 'android',
   serial: null,
   model: null,
   mirroring: false,
   recording: false,
+  recordBusy: false,
   timerInterval: null,
   activityInterval: null,
   currentActivityName: null,
@@ -114,48 +112,32 @@ function setTab(el, tab) {
 async function refreshDevices() {
   const list = $('deviceList')
   list.innerHTML = '<p style="font-size:13px;color:var(--muted);text-align:center;padding:16px">검색 중...</p>'
-  // Android 와 iOS 를 함께 훑는다. iOS 쪽은 도구가 없으면 실패하는데, 그건
-  // 정상 상황(Android 만 쓰는 PC)이라 조용히 빈 목록으로 넘긴다.
-  const [devices, iosRes] = await Promise.all([
-    window.db.getDevices(),
-    window.db.iosDevices().catch(() => ({ ok: false, devices: [] })),
-  ])
-  const iosList = iosRes?.devices || []
-
-  if (!devices.length && !iosList.length) {
+  const devices = await window.db.getDevices()
+  if (!devices.length) {
     list.innerHTML = '<p style="font-size:13px;color:var(--muted);text-align:center;padding:16px">연결된 기기가 없습니다</p>'
     return
   }
   list.innerHTML = ''
-  const add = (icon, title, sub, onPick) => {
+  devices.forEach(d => {
     const item = document.createElement('div')
     item.className = 'device-item'
-    item.innerHTML = `<i class="ti ${icon}"></i>
-      <div class="device-item-info">${escapeHtml(title)}<span>${escapeHtml(sub)}</span></div>
+    item.innerHTML = `<i class="ti ti-device-mobile"></i>
+      <div class="device-item-info">${escapeHtml(d.model)}<span>${escapeHtml(`${d.serial} · ${d.product}`)}</span></div>
       <i class="ti ti-chevron-right" style="color:var(--muted)"></i>`
-    item.onclick = onPick
+    item.onclick = () => selectDevice(d)
     list.appendChild(item)
-  }
-  devices.forEach(d =>
-    add('ti-device-mobile', d.model, `${d.serial} · ${d.product}`,
-      () => selectDevice({ ...d, platform: 'android' })))
-  iosList.forEach(d =>
-    add('ti-brand-apple', d.name, `iOS ${d.version} · ${d.model}`,
-      () => selectDevice({ platform: 'ios', serial: d.udid, model: d.name, ios: d })))
+  })
 }
 
 function selectDevice(d) {
-  state.platform = d.platform || 'android'
   state.serial = d.serial
   state.model = d.model
-  state.ios = d.ios || null
   closeModal()
   setConnected(d.model)
 }
 
-function isIos() { return state.platform === 'ios' }
-
 function setConnected(name) {
+  setRecordingStatus('idle', 'REC 버튼을 눌러 화면 녹화를 시작하세요')
   setClass('connBadge', 'conn-badge connected')
   setText('connText', name)
   setText('statusText', '연결됨', 'var(--accent2)')
@@ -167,20 +149,6 @@ function setConnected(name) {
   updateMirrorToggle()
   refreshDeviceInfo()
   updateConnToggle()
-
-  // iOS 는 미러링·Activity 폴링 경로가 없다. 화면은 AirPlay 수신기 창을 쓰고,
-  // 여기서는 syslog 만 띄운다.
-  if (isIos()) {
-    setClass('phoneIcon', 'ti ti-brand-apple')
-    // iOS 는 화면 미러링을 지원하지 않는다. 기기를 직접 보며 테스트하고 이 앱은
-    // 로그·기기정보·티켓 등록을 맡는 구조다. (경로를 다 시도해 본 결과는 CLAUDE.md
-    // 의 'iOS 지원 범위' 참고 — AirPlay 도 macOS 내장 수신기는 임베드가 불가능하다)
-    setText('phoneMsg', 'iOS 는 화면 미러링을 지원하지 않습니다. 기기를 직접 보며 테스트하세요. ' +
-      '로그와 기기 정보는 이 앱에서 확인할 수 있습니다.')
-    syncLogControls()
-    if (!logcatRunning) toggleLogcat()
-    return
-  }
 
   syncLogControls()
   startActivityPolling()
@@ -689,22 +657,6 @@ let deviceInfo = null
 
 async function refreshDeviceInfo() {
   if (!state.serial) return
-  if (isIos()) {
-    const r = await window.db.iosInfo(state.serial)
-    if (!r.ok) return
-    const i = r.info
-    // 화면 라벨은 Android 것을 그대로 쓴다. 대응되는 iOS 키로 채운다.
-    deviceInfo = {
-      ok: true,
-      manufacturer: 'Apple', model: i.ProductType || '',
-      release: i.ProductVersion || '', sdk: i.BuildVersion || '',
-      phone: i.PhoneNumber || '',
-    }
-    setText('devModel', [i.DeviceName, i.ProductType].filter(Boolean).join(' · ') || '—')
-    setText('devOs', i.ProductVersion ? `iOS ${i.ProductVersion} (${i.BuildVersion || ''})` : '—')
-    setText('devPhone', i.PhoneNumber || 'NULL')
-    return
-  }
   const r = await window.db.deviceInfo(state.serial)
   if (!r.ok) return
   deviceInfo = r
@@ -861,16 +813,6 @@ const LOG_PRESETS = {
       /FATAL EXCEPTION|AndroidRuntime:|Caused by:|\b\w+Exception\b|\bat [a-zA-Z][\w.$]*\.[\w$<>]+\(/,
       /\bANR in\b|Input dispatching timed out|Reason:.*(ANR|not responding)/i,
     ],
-  },
-  // iOS 전용. `-p Runner` 로 프로세스를 좁혀도 그 안에서 Apple 프레임워크가 내는
-  // 로그가 대부분이다 — 실측 15초에 Runner 4,798줄 중 CoreFoundation 1,806 /
-  // UIKitCore 1,030 / libAccessibility 577 … 이런 식이다.
-  // **Dart 코드의 출력은 서브시스템이 `Flutter` 이고 메시지가 `flutter:` 로 시작한다**
-  // (ios-device.js 가 태그를 `Runner/Flutter` 로 만든다). 크래시 기록자(ReportCrash /
-  // osanalyticshelper)의 줄도 함께 통과시킨다 — 앱이 죽는 순간은 그쪽에만 남는다.
-  appOnly: {
-    label: '앱 로그만 (iOS)',
-    res: [/\s[VDIWEFA]\s+\S*\/Flutter:|:\s*flutter:\s|\s[VDIWEFA]\s+(ReportCrash|osanalyticshelper)[/:]/],
   },
 }
 let logcatPreset = ''
@@ -1103,71 +1045,26 @@ function setLogcatRunning(on) {
 
 async function toggleLogcat() {
   if (logcatRunning) {
-    await (isIos() ? window.db.iosSyslogStop() : window.db.stopLogcat())
+    await window.db.stopLogcat()
     setLogcatRunning(false)
     return
   }
   if (!requireDevice()) return
-  // iOS syslog 는 필터가 없으면 초당 1,000줄이 넘어 LOGCAT_MAX_LINES 를 몇 초 만에
-  // 넘긴다. 기기 쪽 --quiet 를 켜고, 프로세스가 지정돼 있으면 그걸로 좁힌다.
-  const r = isIos()
-    ? await window.db.iosSyslogStart({ udid: state.serial, process: IOS_LOG_PROCESS, quiet: true })
-    : await window.db.startLogcat(state.serial)
+  const r = await window.db.startLogcat(state.serial)
   if (!r.ok) { showToast('로그 시작 실패: ' + (r.message || ''), true); return }
   setLogcatRunning(true)
 }
 
-// **Flutter 앱만 QA 하므로 프로세스를 Runner 로 고정한다.** Flutter 가 Xcode
-// 프로젝트를 Runner 로 만들어서 모든 Flutter iOS 앱의 프로세스 이름이 Runner 다.
-// 필터 없이 붙으면 초당 약 1,300줄이 쏟아져 LOGCAT_MAX_LINES(3,000)를 몇 초 만에
-// 넘기므로, 연결하는 순간부터 걸려 있어야 한다.
-//
-// **크래시는 앱 프로세스가 아니라 ReportCrash / osanalyticshelper 가 기록한다.**
-// Runner 만 잡으면 앱이 죽는 순간의 기록을 통째로 놓치므로 같이 받는다(`-p` 는 `|`
-// 로 여러 프로세스를 받는다). 이 둘은 평소엔 조용해서 물량 부담이 없다.
-const IOS_LOG_PROCESS = 'Runner|ReportCrash|osanalyticshelper'
+const PRESET_OPTIONS = [['', '필터 없음'], ['http', 'HTTP 통신'], ['crash', '예외 · 크래시 · ANR']]
 
-// 프리셋 드롭다운은 플랫폼마다 쓸 수 있는 항목이 다르다.
-//  - http / crash 프리셋의 정규식은 OkHttp·AndroidRuntime 같은 **Android 전용** 이라
-//    iOS 에서는 절대 안 걸린다. 띄워두면 고르고 빈 화면만 보게 된다.
-//  - iOS 는 syslog 를 이미 `-p` 로 좁혀 받으므로 '필터 없음' 이 실제로는 필터가 걸린
-//    상태다. 그 이름을 그대로 두면 오해를 부른다 — 무엇이 보이는지로 이름을 바꾼다.
-const PRESET_OPTIONS = {
-  android: [['', '필터 없음'], ['http', 'HTTP 통신'], ['crash', '예외 · 크래시 · ANR']],
-  ios: [['appOnly', '앱 로그 · 크래시'], ['', '시스템 로그까지 전부']],
-}
-
-// 플랫폼에 따라 로그 도구 표시를 바꾼다.
-async function syncLogControls() {
+function syncLogControls() {
   const presetSel = $('logcatPreset')
   if (presetSel) {
-    const opts = PRESET_OPTIONS[isIos() ? 'ios' : 'android']
-    presetSel.innerHTML = opts
+    presetSel.innerHTML = PRESET_OPTIONS
       .map(([v, l]) => `<option value="${v}">${escapeHtml(l)}</option>`).join('')
-    // iOS 는 앱 로그를 기본으로 띄운다. 시스템 소음이 99%(실측 4,798줄 중 Dart 는 480줄)라
-    // 기본이 전체면 정작 봐야 할 줄이 묻힌다.
-    logcatPreset = isIos() ? 'appOnly' : ''
+    logcatPreset = ''
     presetSel.value = logcatPreset
     renderLogcat()
-  }
-  const appBtn = $('logFilterBtn')
-  // '현재 실행중인 앱' 버튼은 포그라운드 패키지 조회(adb)에 의존한다. iOS 는 포그라운드
-  // 앱을 알 수 없고, 애초에 프로세스를 Runner 로 고정해 붙으므로 감춘다.
-  if (appBtn) appBtn.style.display = isIos() ? 'none' : ''
-  // 기기 제어 툴바는 대부분 adb 전용이다. 감추지 않고 **비활성으로 남긴다** —
-  // 통째로 사라지면 어떤 기능이 있는 도구인지 알 수 없다.
-  // 캡처만 예외다: iOS 도 AFC 로 기기의 최신 스크린샷을 회수할 수 있다.
-  const bar = $('deviceBar')
-  if (bar) {
-    for (const el of bar.querySelectorAll('button')) {
-      const capture = el.getAttribute('onclick') === 'takeScreenshot()'
-      el.disabled = isIos() && !capture
-      el.title = el.disabled
-        ? (el.title.split(' — ')[0] + ' — iOS 미지원 (adb 전용)')
-        : el.title.split(' — ')[0]
-    }
-    const cap = bar.querySelector('[onclick="takeScreenshot()"]')
-    if (cap) cap.title = '캡처'
   }
 }
 
@@ -1188,6 +1085,9 @@ function copyLogcat() {
 
 window.db.onLogcatData(appendLogcat)
 window.db.onLogcatStopped(() => setLogcatRunning(false))
+window.db.onRecordEnded(status => {
+  if (state.recording) finishRecording(status.message || '기기 녹화가 예기치 않게 종료되었습니다')
+})
 window.db.onUpdateStatus(status => {
   const label = $('updateStatus')
   const button = $('updateCheckBtn')
@@ -1530,6 +1430,7 @@ function toggleConnection() {
 
 async function disconnectDevice() {
   const name = state.model || state.serial
+  if (state.recording) await finishRecording()
   if (state.mirroring) await stopMirror()
   if (logcatRunning) { await window.db.stopLogcat(); setLogcatRunning(false) }
   stopActivityPolling()
@@ -1623,11 +1524,8 @@ function spinCanvasNow(dir) {
 
 async function takeScreenshot() {
   if (!requireDevice()) return
-  // iOS 는 첫 캡처에서 userspace 터널을 띄우느라 2초쯤 걸린다 (이후는 0.8초).
-  showToast(isIos() ? '캡처 중... (첫 회는 터널 기동으로 몇 초 걸립니다)' : '캡처 중...')
-  const r = isIos()
-    ? await window.db.iosScreenshot(state.serial)
-    : await window.db.screenshot(state.serial)
+  showToast('캡처 중...')
+  const r = await window.db.screenshot(state.serial)
   if (!r.ok) { showToast(r.message || '캡처 실패', true); return }
   const img = $('capturePreview')
   if (img) img.src = r.dataUrl
@@ -1663,51 +1561,112 @@ function closeCaptureModal() {
 }
 
 // ── 화면 녹화 ──────────────────────────────────────────────────
-// 버튼 하나로 시작/중지를 토글하고, 녹화 중에는 디바이스 우측 상단에 REC 를 띄운다.
-function setRecordingUI(on) {
+function setRecordingStatus(status, text, filePath) {
+  const el = $('recStatus')
+  if (el) el.dataset.state = status
+  setText('recStatusText', text)
+  const pathRow = $('recPathRow')
+  if (pathRow) pathRow.hidden = !filePath
+  setText('recPathText', filePath || '')
+}
+
+function setRecordingUI(on, busy = false) {
   const btn = $('recToggle')
   if (btn) {
     btn.classList.toggle('on', on)
+    btn.disabled = busy
     btn.innerHTML = on
       ? '<i class="ti ti-square-filled"></i><span>STOP</span>'
       : '<i class="ti ti-circle-filled"></i><span>REC</span>'
+    btn.title = on ? '녹화 종료 및 저장' : '화면 녹화 시작'
   }
-  $('recTimer')?.classList.toggle('on', on)   // 경과 시간은 녹화 중에만 보인다
+  $('recTimer')?.classList.toggle('on', on)
 }
 
 async function toggleRecord() {
   if (!requireDevice()) return
+  if (state.recordBusy) return
 
   if (!state.recording) {
+    state.recordBusy = true
+    setRecordingUI(false, true)
+    setRecordingStatus('starting', '녹화 시작 중...')
     const bitrate = parseInt($('recBitrate')?.value || '4')
     const size = $('recSize')?.value || ''
-    const r = await window.db.recordStart({ serial: state.serial, bitrate, size: size || null })
-    if (!r.ok) { showToast(r.message || '녹화 시작 실패', true); return }
+    try {
+      const r = await window.db.recordStart({ serial: state.serial, bitrate, size: size || null })
+      if (!r.ok) {
+        setRecordingStatus('error', r.message || '녹화를 시작하지 못했습니다')
+        showToast(r.message || '녹화 시작 실패', true)
+        return
+      }
 
-    state.recording = true
-    state.seconds = 0
-    setRecordingUI(true)
-    setText('recTimer', '00:00')
-    state.timerInterval = setInterval(() => {
-      state.seconds++
-      const m = Math.floor(state.seconds / 60)
-      const s = state.seconds % 60
-      setText('recTimer', [m, s].map(n => String(n).padStart(2, '0')).join(':'))
-      // Android 가 3분에서 스스로 멈춘다. 같이 끝내지 않으면 기기는 이미 끝났는데
-      // 버튼만 STOP 인 채로 남는다.
-      if (state.seconds >= 180) toggleRecord()
-    }, 1000)
-    showToast('녹화 시작됨')
+      state.recording = true
+      state.seconds = 0
+      setRecordingUI(true)
+      setText('recTimer', '00:00')
+      setRecordingStatus('recording', '녹화 중 · 00:00')
+      state.timerInterval = setInterval(() => {
+        state.seconds++
+        const m = Math.floor(state.seconds / 60)
+        const s = state.seconds % 60
+        const elapsed = [m, s].map(n => String(n).padStart(2, '0')).join(':')
+        setText('recTimer', elapsed)
+        setRecordingStatus('recording', `녹화 중 · ${elapsed}`)
+        if (state.seconds >= 180) finishRecording()
+      }, 1000)
+      showToast('화면 녹화 중 — 종료하려면 STOP을 누르세요')
+    } catch (error) {
+      setRecordingStatus('error', `녹화 시작 실패: ${error.message}`)
+      showToast(`녹화 시작 실패: ${error.message}`, true)
+    } finally {
+      state.recordBusy = false
+      if (!state.recording) setRecordingUI(false)
+    }
     return
   }
 
+  await finishRecording()
+}
+
+async function finishRecording(reason) {
+  if (!state.recording || state.recordBusy) return
+  state.recordBusy = true
+  const serial = state.serial
   clearInterval(state.timerInterval)
   state.recording = false
-  setRecordingUI(false)
-  showToast('녹화 파일 저장 중...', false, true)
-  const r = await window.db.recordStop(state.serial)
-  if (r.ok) showToast('녹화 저장 완료: ' + r.path)
-  else showToast(r.message || '녹화 저장 실패', true)
+  setRecordingUI(false, true)
+  setRecordingStatus('saving', reason
+    ? `${reason} · 저장할 위치를 선택하세요...`
+    : '녹화를 종료하고 저장할 위치를 선택하세요...')
+  showToast(reason || '녹화 파일 저장 중...', !!reason, !reason)
+  try {
+    const r = await window.db.recordStop(serial)
+    if (r.ok) {
+      setRecordingStatus('saved', '녹화 저장 완료', r.path)
+      showToast('녹화 저장 완료: ' + r.path)
+    } else if (r.canceled) {
+      setRecordingStatus('canceled', '저장을 취소했습니다. 녹화본은 기기에 임시 보관되어 있습니다.')
+      showToast('녹화 저장을 취소했습니다', true)
+    } else {
+      setRecordingStatus('error', r.message || '녹화 저장 실패')
+      showToast(r.message || '녹화 저장 실패', true)
+    }
+  } catch (error) {
+    setRecordingStatus('error', `녹화 저장 실패: ${error.message}`)
+    showToast(`녹화 저장 실패: ${error.message}`, true)
+  } finally {
+    state.recordBusy = false
+    setRecordingUI(false)
+  }
+}
+
+function copyRecordingPath() {
+  const filePath = $('recPathText')?.textContent
+  if (!filePath) return
+  navigator.clipboard.writeText(filePath)
+    .then(() => showToast('저장 경로를 복사했습니다'))
+    .catch(() => showToast('경로 복사 실패', true))
 }
 
 // ── APK 설치 ───────────────────────────────────────────────────
@@ -1721,7 +1680,11 @@ async function handleApkDrop(e) {
   e.preventDefault()
   $('dropZone').classList.remove('dragging')
   if (!requireDevice()) return
-  const files = [...e.dataTransfer.files].filter(f => f.name.endsWith('.apk') || f.name.endsWith('.xapk'))
+  const files = [...e.dataTransfer.files].filter(f => /\.(apk|xapk)$/i.test(f.name))
+  if (files.some(f => !f.path)) {
+    showToast('APK 파일 경로를 읽을 수 없습니다. 파일 선택 버튼으로 다시 선택해 주세요.', true)
+    return
+  }
   files.forEach(f => installApk(f.path))
 }
 
@@ -1748,6 +1711,10 @@ function handleMirrorDrop(e) {
   const others = files.filter(f => !isApk(f))
 
   if (apks.length) {
+    if (apks.some(f => !f.path)) {
+      showToast('APK 파일 경로를 읽을 수 없습니다. 파일 선택 버튼으로 다시 선택해 주세요.', true)
+      return
+    }
     pendingApks = apks.map(f => f.path)
     setText('apkConfirmText', apks.length === 1
       ? `${apks[0].name} 를 설치하시겠습니까?`
@@ -1765,23 +1732,24 @@ function handleMirrorDrop(e) {
 
 // Electron 은 dragover 를 취소한 영역에서만 파일 드롭을 허용한다.
 // 기기 화면 밖에서도 APK 를 앱 창에 놓을 수 있도록 창 전체의 파일 드래그를 수락한다.
-document.addEventListener('dragover', e => {
+window.addEventListener('dragover', e => {
   if (!Array.from(e.dataTransfer.types).includes('Files')) return
   e.preventDefault()
   e.dataTransfer.dropEffect = 'copy'
-})
+}, true)
 
-document.addEventListener('drop', e => {
+window.addEventListener('drop', e => {
   if (!Array.from(e.dataTransfer.types).includes('Files')) return
-  e.preventDefault()
-  // 기기 화면은 자체 처리기가 APK 설치와 일반 파일 전송을 모두 담당한다.
-  if (e.target.closest?.('#phoneScreen')) return
+  // 전용 드롭 영역은 자체 처리기가 담당한다.
+  if (e.target.closest?.('[ondrop]')) return
 
+  e.preventDefault()
+  e.stopPropagation()
   const files = [...e.dataTransfer.files]
   if (files.some(f => /\.(apk|xapk)$/i.test(f.name))) {
     handleMirrorDrop(e)
   }
-})
+}, true)
 
 async function confirmPush() {
   $('pushConfirmOverlay')?.classList.remove('open')
@@ -1848,6 +1816,10 @@ function installErrorReason(output) {
 }
 
 async function installApk(apkPath) {
+  if (typeof apkPath !== 'string' || !apkPath.trim()) {
+    showToast('APK 파일 경로를 읽을 수 없습니다. 파일 선택 버튼으로 다시 선택해 주세요.', true)
+    return
+  }
   const name = apkPath.split(/[\\/]/).pop()
   // 진행 UI 는 'APK 설치' 탭에만 있어서 다른 탭(특히 미러링)에서는 완료될 때까지
   // 아무 반응이 없어 보인다. 어느 화면에 있든 보이도록 토스트를 띄워 둔다.
@@ -1949,23 +1921,6 @@ function addFileQueueItem(name, ok) {
     </div><span class="install-status ${ok ? 'done' : ''}" style="${ok ? '' : 'color:var(--red)'}">${ok ? '전송 완료' : '실패'}</span>`
   queue.prepend(item)
   showToast(ok ? name + ' 전송 완료' : '전송 실패', !ok)
-}
-
-// ── 클립보드 ───────────────────────────────────────────────────
-async function sendClipboard() {
-  if (!requireDevice()) return
-  const text = $('pcText').value.trim()
-  if (!text) { showToast('텍스트를 입력하세요', true); return }
-  const r = await window.db.clipboardSend({ serial: state.serial, text })
-  if (r.ok) showToast('전송 완료')
-  else showToast('전송 실패 (Clipper 앱 필요)', true)
-}
-
-async function fetchClipboard() {
-  if (!requireDevice()) return
-  const r = await window.db.clipboardGet(state.serial)
-  if (r.ok) { $('androidText').value = r.text; showToast('가져오기 완료') }
-  else showToast('가져오기 실패 (Clipper 앱 필요)', true)
 }
 
 // 디바이스는 앱 높이를 꽉 채우고, 너비는 기기 화면비로 역산한다.

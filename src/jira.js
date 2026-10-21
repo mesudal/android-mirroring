@@ -508,7 +508,7 @@ if (require.main === module) {
           { fieldId: 'description', name: '설명', schema: { type: 'string' } },
           {
             fieldId: 'customfield_10131', name: '플랫폼', schema: { type: 'array', items: 'option' },
-            allowedValues: [{ id: '10204', value: 'AOS' }, { id: '10205', value: 'iOS' }],
+            allowedValues: [{ id: '10204', value: 'AOS' }, { id: '10205', value: 'Web' }],
           },
           {
             fieldId: 'fixVersions', name: '수정 버전', schema: { type: 'array', items: 'version' },
@@ -527,7 +527,7 @@ if (require.main === module) {
     assert.ok(fr.ok, '필드 조회 실패: ' + fr.message)
     assert.deepStrictEqual(fr.fields.map(f => f.id), ['customfield_10131', 'fixVersions', 'priority'],
       '요약·설명·미지원 타입이 안 걸러졌다: ' + fr.fields.map(f => f.id))
-    assert.deepStrictEqual(fr.fields[0].options, [{ id: '10204', label: 'AOS' }, { id: '10205', label: 'iOS' }])
+    assert.deepStrictEqual(fr.fields[0].options, [{ id: '10204', label: 'AOS' }, { id: '10205', label: 'Web' }])
     assert.strictEqual(fr.fields[1].options[0].label, 'App-v53', '버전은 name 을 라벨로 써야 한다')
 
     // 타입별 직렬화 — 여기가 틀리면 Jira 가 400 을 뱉는다

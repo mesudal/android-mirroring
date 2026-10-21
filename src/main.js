@@ -5,7 +5,6 @@ const { spawn, execFile, execSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
-const iosDevice = require('./ios-device')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
@@ -72,6 +71,9 @@ let adbPath = resolveBin(adbBin)
 let mainWindow = null
 let mirror = null   // MirrorBridge 인스턴스
 let recordingProcess = null
+let recordingStopping = false
+let clipboardPollTimer = null
+let lastDesktopClipboard = null
 let proxyServer = null
 let certManager = null
 let updateCheckInProgress = false
@@ -182,9 +184,48 @@ function setupAutoUpdater() {
 
 function getMirror() {
   if (!mirror) {
-    mirror = new MirrorBridge({ adbPath, binDir, onLog: logMirror })
+    mirror = new MirrorBridge({
+      adbPath,
+      binDir,
+      onLog: logMirror,
+      onClipboard: syncDeviceClipboard,
+    })
   }
   return mirror
+}
+
+function stopDesktopClipboardSync() {
+  clearInterval(clipboardPollTimer)
+  clipboardPollTimer = null
+  lastDesktopClipboard = null
+}
+
+function startDesktopClipboardSync() {
+  stopDesktopClipboardSync()
+  lastDesktopClipboard = clipboard.readText()
+  clipboardPollTimer = setInterval(() => {
+    const text = clipboard.readText()
+    if (text === lastDesktopClipboard) return
+    lastDesktopClipboard = text
+    if (text.length > 1024 * 1024) {
+      logMirror('[클립보드] 1MB를 넘는 텍스트는 동기화하지 않습니다')
+      return
+    }
+    mirror?.setClipboard(text)
+  }, 500)
+}
+
+function syncDeviceClipboard(text) {
+  if (text.length > 1024 * 1024) {
+    logMirror('[클립보드] 기기에서 받은 텍스트가 1MB를 넘어 동기화하지 않습니다')
+    return
+  }
+  try { clipboard.writeText(text) } catch (error) {
+    logMirror(`[클립보드] PC 클립보드에 쓰지 못했습니다: ${error.message}`)
+    return
+  }
+  lastDesktopClipboard = text
+  logMirror('[클립보드] Android → PC 동기화 완료')
 }
 
 // ── 윈도우 생성 ────────────────────────────────────────────────
@@ -215,6 +256,7 @@ function createWindow() {
     // (가로 최소치는 레이아웃이 더 넓게 요구하면 window:set-min-size 로 올라가기만 한다)
     width: launch.width, height: launch.height,
     minWidth: launch.width, minHeight: launch.height,
+    title: `안드로이드 미러링 v${app.getVersion()}`,
     autoHideMenuBar: true,   // Alt 를 눌러도 메뉴바가 나타나지 않게
     backgroundColor: '#0e0e10',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
@@ -234,6 +276,11 @@ function createWindow() {
         `${new Date().toISOString()} [renderer] ${message}  (${sourceId}:${line})\n`)
     } catch { }
   })
+  // 페이지의 <title> 이 창 제목을 덮어쓰지 않도록 실행 버전을 고정한다.
+  mainWindow.webContents.on('page-title-updated', event => {
+    event.preventDefault()
+    mainWindow?.setTitle(`안드로이드 미러링 v${app.getVersion()}`)
+  })
 
   // 상단 메뉴바(File/Edit/View/…)를 화면에서만 감춘다. 메뉴 자체는 살아 있어서
   // Ctrl+R(새로고침) 같은 기본 단축키는 그대로 동작한다.
@@ -245,7 +292,7 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mirror?.destroy()
     stopLogcat()   // 창이 닫혀도 adb logcat 이 남아 돌지 않게
-    ios?.stopTunnel()   // go-ios userspace 터널도 같이 내린다
+    stopDesktopClipboardSync()
     mainWindow = null
   })
 }
@@ -315,6 +362,7 @@ ipcMain.handle('mirror:start', async (_, { serial, maxSize, videoBitrate, fps })
   try {
     adbPath = resolveBin(adbBin) // 재탐색 (setup 이후 변경 대응)
     await getMirror().start({ serial, maxSize, videoBitrate, fps })
+    startDesktopClipboardSync()
     return { ok: true }
   } catch (e) {
     return { ok: false, message: e.message }
@@ -322,6 +370,7 @@ ipcMain.handle('mirror:start', async (_, { serial, maxSize, videoBitrate, fps })
 })
 
 ipcMain.handle('mirror:stop', async () => {
+  stopDesktopClipboardSync()
   await mirror?.stop()
   return { ok: true }
 })
@@ -525,49 +574,98 @@ ipcMain.handle('window:set-min-size', (_, width) => {
   return { ok: true, frameW }
 })
 
-// 녹화 시작
+// 녹화 시작. ADB 프로세스가 즉시 종료되면 시작 실패로 보고, 실제로 살아 있는지 확인한 뒤
+// 성공을 반환한다. screenrecord 는 동작 중 별도 출력을 내지 않으므로 잠시 생존 여부를 본다.
 ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
+  if (recordingProcess) return { ok: false, message: '이미 녹화 중입니다' }
+  if (!adbPath) return { ok: false, message: 'adb 를 찾을 수 없습니다' }
+
   const args = ['-s', serial, 'shell', 'screenrecord',
     '--bit-rate', String((bitrate || 4) * 1000000),
-    '--time-limit', '180'] // screenrecord 최대 한도 (3분). 그 이상은 자동 종료됨
+    '--time-limit', '180']
   if (size) args.push('--size', size)
   args.push('/sdcard/_db_rec.mp4')
-  recordingProcess = spawn(adbPath, args)
-  recordingProcess.on('close', () => { recordingProcess = null })
-  return { ok: true }
+
+  return new Promise(resolve => {
+    let output = ''
+    let startupTimer = null
+    let started = false
+    let proc
+    try { proc = spawn(adbPath, args) } catch (error) {
+      resolve({ ok: false, message: `adb 녹화 실행 실패: ${error.message}` })
+      return
+    }
+    recordingProcess = proc
+    recordingStopping = false
+    const finishStart = result => {
+      if (!startupTimer) return
+      clearTimeout(startupTimer)
+      startupTimer = null
+      resolve(result)
+    }
+    const collect = chunk => { output += chunk.toString() }
+    proc.stdout.on('data', collect)
+    proc.stderr.on('data', collect)
+    proc.on('error', error => {
+      if (recordingProcess === proc) recordingProcess = null
+      finishStart({ ok: false, message: `adb 녹화 실행 실패: ${error.message}` })
+      if (started && !recordingStopping) {
+        mainWindow?.webContents.send('adb:record-ended', { message: error.message })
+      }
+    })
+    proc.on('close', code => {
+      if (recordingProcess === proc) recordingProcess = null
+      if (!started) {
+        finishStart({
+          ok: false,
+          message: output.trim() || `녹화를 시작하지 못했습니다 (종료 코드 ${code})`,
+        })
+      } else if (!recordingStopping) {
+        mainWindow?.webContents.send('adb:record-ended', {
+          message: output.trim() || `기기 녹화가 종료되었습니다 (종료 코드 ${code})`,
+        })
+      }
+    })
+    startupTimer = setTimeout(() => {
+      started = true
+      finishStart({ ok: true })
+    }, 800)
+  })
 })
 
 // SIGINT 를 받은 screenrecord 가 mdat flush → moov atom 기록 → mdat 크기 패치까지
 // 마치고 스스로 종료할 때까지 대기한다. 여기서 로컬 adb 를 먼저 kill 하면 shell 세션이
 // 끊기며 그 마무리가 중단되어 moov 없는 미완결 mp4(재생 불가)가 남는다.
-// ponytail: pkill 이 실패하면 타임아웃까지 기다린 뒤 강제 종료 — 그 경우 파일은 여전히
-// 깨진다. 필요해지면 pkill 성공 여부를 확인해 사용자에게 알리는 쪽으로 올릴 것.
+// 종료 제한을 넘기면 ADB 를 끊고 오류를 반환해 저장 파일이 불완전할 수 있음을 알린다.
 function waitRecordingExit(timeoutMs = 15000) {
   const proc = recordingProcess
-  if (!proc) return Promise.resolve()
+  if (!proc) return Promise.resolve(false)
   return new Promise(resolve => {
-    const timer = setTimeout(() => { proc.kill(); resolve() }, timeoutMs)
-    proc.once('close', () => { clearTimeout(timer); resolve() })
+    const timer = setTimeout(() => { proc.kill(); resolve(true) }, timeoutMs)
+    proc.once('close', () => { clearTimeout(timer); resolve(false) })
   })
 }
 
 // 녹화 중지 + 저장
 ipcMain.handle('adb:record-stop', async (_, serial) => {
   try {
+    recordingStopping = true
     // 기기에서 실행 중인 screenrecord 프로세스에 SIGINT 전송 (정상 종료 → 파일 무결성 보장)
     await runAdb(['-s', serial, 'shell', 'pkill', '-2', 'screenrecord']).catch(() => { })
-    await waitRecordingExit()
+    const timedOut = await waitRecordingExit()
     recordingProcess = null
+    if (timedOut) throw new Error('녹화 종료 응답이 늦어 저장 파일이 불완전할 수 있습니다')
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       title: '녹화 파일 저장',
       defaultPath: `recording_${Date.now()}.mp4`,
       filters: [{ name: 'MP4', extensions: ['mp4'] }],
     })
-    if (!filePath) return { ok: false, message: '취소됨' }
+    if (!filePath) return { ok: false, canceled: true }
     await runAdb(['-s', serial, 'pull', '/sdcard/_db_rec.mp4', filePath])
     await runAdb(['-s', serial, 'shell', 'rm', '/sdcard/_db_rec.mp4'])
     return { ok: true, path: filePath }
   } catch (e) { return { ok: false, message: String(e) } }
+  finally { recordingStopping = false }
 })
 
 // APK 선택 다이얼로그
@@ -600,6 +698,9 @@ ipcMain.handle('dialog:openVideo', async () => {
 
 // APK 설치
 ipcMain.handle('adb:install', (_, { serial, apkPath }) => {
+  if (typeof apkPath !== 'string' || !apkPath.trim()) {
+    return { ok: false, output: 'APK 파일 경로를 읽을 수 없습니다.' }
+  }
   return new Promise(resolve => {
     const proc = spawn(adbPath, ['-s', serial, 'install', '-r', apkPath])
     let output = ''
@@ -630,22 +731,6 @@ ipcMain.handle('adb:pull', async (_, { serial, remotePath }) => {
     if (!filePath) return { ok: false }
     await runAdb(['-s', serial, 'pull', remotePath, filePath])
     return { ok: true, path: filePath }
-  } catch (e) { return { ok: false, message: String(e) } }
-})
-
-// 클립보드 전송
-ipcMain.handle('adb:clipboard-send', async (_, { serial, text }) => {
-  try {
-    const escaped = text.replace(/'/g, "'\\''")
-    await runAdb(['-s', serial, 'shell', `am broadcast -a clipper.set -e text '${escaped}'`])
-    return { ok: true }
-  } catch (e) { return { ok: false, message: String(e) } }
-})
-
-// 클립보드 가져오기
-ipcMain.handle('adb:clipboard-get', async (_, serial) => {
-  try {
-    return { ok: true, text: await runAdb(['-s', serial, 'shell', 'clipper']) }
   } catch (e) { return { ok: false, message: String(e) } }
 })
 
@@ -790,11 +875,8 @@ ipcMain.handle('device:info', async (_, serial) => {
 // ── LogCat 스트리밍 ────────────────────────────────────────────
 let logcatProcess = null
 
-// Android logcat 과 iOS syslog 는 같은 logcat:data 채널을 쓴다. 둘이 동시에
-// 흐르면 두 기기 로그가 섞이므로 한쪽을 멈출 때 다른 쪽도 같이 멈춘다.
 function stopLogcat() {
   if (logcatProcess) { logcatProcess.kill(); logcatProcess = null }
-  ios?.stopSyslog()
 }
 
 ipcMain.handle('logcat:start', async (_, serial) => {
@@ -826,40 +908,6 @@ ipcMain.handle('logcat:stop', async () => {
   stopLogcat()
   return { ok: true }
 })
-
-// ── iOS (libimobiledevice) ────────────────────────────────────
-// 화면·입력은 다루지 않는다. 화면은 AirPlay 수신기 창을 렌더러가 desktopCapturer 로
-// 가져오고, 입력은 iOS 에 주입 경로가 없다 (WebDriverAgent 는 별도 과제).
-let ios = null
-function getIos() {
-  if (!ios) ios = iosDevice.create({ resolveBin, onLog: logMirror })
-  return ios
-}
-
-ipcMain.handle('ios:devices', () => getIos().devices())
-ipcMain.handle('ios:info', (_, udid) => getIos().info(udid))
-
-// syslog 는 모듈에서 logcat threadtime 형식으로 변환되어 나오므로 **기존
-// logcat:data / logcat:stopped 채널을 그대로 쓴다.** 렌더러의 LogCat 패널과
-// 필터·검색이 손대지 않고 동작하고, 새 리스너를 등록할 일도 없다.
-// Android 의 adb:screenshot 과 같은 자리를 맡는다. lastCapture 를 채우므로
-// capture:save / capture:copy / 미리보기 모달이 손대지 않고 그대로 동작한다.
-// 첫 호출에서 go-ios userspace 터널이 뜨느라 몇 초 걸린다.
-ipcMain.handle('ios:screenshot', async (_, udid) => {
-  const r = await getIos().screenshot(udid)
-  if (!r.ok) return r
-  lastCapture = r.buf
-  return { ok: true, dataUrl: 'data:image/png;base64,' + r.buf.toString('base64') }
-})
-
-ipcMain.handle('ios:syslog-start', (_, { udid, process: proc, quiet }) => {
-  stopLogcat()   // Android logcat 과 동시에 흐르면 두 기기 로그가 섞인다
-  return getIos().startSyslog(udid, { process: proc, quiet },
-    chunk => mainWindow?.webContents.send('logcat:data', chunk),
-    () => mainWindow?.webContents.send('logcat:stopped'))
-})
-
-ipcMain.handle('ios:syslog-stop', () => getIos().stopSyslog())
 
 // 지금 화면에 보이는 로그(필터 적용분)를 txt 로 저장한다. 내용은 렌더러가 만들어 넘긴다.
 ipcMain.handle('logcat:save', async (_, text) => {

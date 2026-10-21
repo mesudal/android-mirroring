@@ -18,7 +18,7 @@
     <!-- 왼쪽: 디바이스. 높이는 창의 60% 로 고정하며 그 아래로는 줄지 않는다 -->
     <div class="device-col">
       <!-- 기기 제어 툴바 — 디바이스 바로 위. 예전 미러링 탭의 '기기 제어' 카드를 대체한다 -->
-      <!-- adb 전용 컨트롤. iOS 기기에서는 동작하지 않아 syncLogControls() 가 감춘다 -->
+      <!-- Android 기기 제어 툴바 -->
       <div class="device-bar" id="deviceBar">
         <button class="dev-btn" onclick="keyevent(4)" title="뒤로"><i class="ti ti-arrow-left"></i></button>
         <button class="dev-btn" onclick="keyevent(3)" title="홈"><i class="ti ti-circle"></i></button>
@@ -39,7 +39,7 @@
         </button>
       </div>
       <div class="phone-frame">
-        <!-- 녹화 경과 시간 — 녹화 중에만 보인다 -->
+        <!-- 녹화 경과 시간 -->
         <div class="rec-timer" id="recTimer">00:00</div>
             <div class="phone-screen" id="phoneScreen"
               ondragover="event.preventDefault();this.classList.add('apk-drop')"
@@ -50,6 +50,15 @@
               <p id="phoneMsg" style="font-size:13px;color:var(--muted)">기기를 연결해 주세요</p>
               <div class="phone-home"></div>
             </div>
+      </div>
+      <div class="rec-status" id="recStatus" data-state="idle" role="status" aria-live="polite">
+        <div><i class="ti ti-info-circle"></i><span id="recStatusText">기기를 연결하면 화면을 녹화할 수 있습니다</span></div>
+        <div id="recPathRow" class="rec-path-row" hidden>
+          <code id="recPathText"></code>
+          <button class="btn-sm" onclick="copyRecordingPath()" title="저장 경로 복사">
+            <i class="ti ti-copy"></i>경로 복사
+          </button>
+        </div>
       </div>
     </div>
 
@@ -196,24 +205,6 @@
           <p>지원 형식: .apk · .xapk</p>
         </div>
         <div class="install-queue" id="installQueue"></div>
-      </div>
-
-      <!-- 클립보드 -->
-      <div class="page" id="page-clipboard">
-        <div class="clip-area">
-          <div class="clip-box">
-            <h3><i class="ti ti-device-desktop"></i> PC → Android</h3>
-            <textarea id="pcText" placeholder="Android로 보낼 텍스트를 입력하세요..."></textarea>
-            <button class="btn-primary" style="margin-top:10px" onclick="sendClipboard()">
-              <i class="ti ti-send"></i>Android로 전송
-            </button>
-          </div>
-          <div class="clip-box">
-            <h3><i class="ti ti-device-mobile"></i> Android → PC</h3>
-            <textarea id="androidText" placeholder="Android 클립보드 내용이 여기에 표시됩니다..." readonly></textarea>
-            <button class="btn-outline" onclick="fetchClipboard()"><i class="ti ti-refresh"></i>가져오기</button>
-          </div>
-        </div>
       </div>
 
       <!-- 파일 전송 -->

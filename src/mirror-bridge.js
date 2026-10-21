@@ -60,10 +60,11 @@ function parseSessionMeta(buf) {
 }
 
 class MirrorBridge {
-  constructor({ adbPath, binDir, onLog }) {
+  constructor({ adbPath, binDir, onLog, onClipboard }) {
     this.adbPath = adbPath
     this.binDir = binDir
     this.log = msg => onLog?.('[bridge] ' + msg)
+    this.onClipboard = onClipboard
     this.wss = null
     this.wsClient = null
     this.adbSock = null
@@ -74,6 +75,9 @@ class MirrorBridge {
     this._metaJson = null   // 캐싱: 늦게 연결된 WS 클라이언트에게 전송
     this._frameCnt = 0
     this.keyboardMode = 'clipboard'   // 'uhid' | 'clipboard' — start() 에서 판정
+    this._deviceMessageBuffer = Buffer.alloc(0)
+    this._clipboardSequence = 0n
+    this._pendingClipboardSequences = new Set()
   }
 
   // UHID 는 API 레벨이 아니라 /dev/uhid 에 대한 SELinux 정책에 달려 있다.
@@ -290,6 +294,7 @@ class MirrorBridge {
       'tunnel_forward=true',
       'send_frame_meta=true',   // ← 핵심 수정: 프레임 단위 메타데이터로 안정적 파싱
       'control=true',
+      'clipboard_autosync=true',
       'video_codec=h264',
       'audio=false',
       'cleanup=true',
@@ -356,6 +361,8 @@ class MirrorBridge {
           controlSock.on('connect', () => {
             controlSock.setTimeout(0)
             this.controlSock = controlSock
+            this._deviceMessageBuffer = Buffer.alloc(0)
+            controlSock.on('data', data => this._handleDeviceMessages(data))
             this.log('제어 소켓 연결 성공')
 
             this._pipe(videoSock)
@@ -564,26 +571,82 @@ class MirrorBridge {
   }
 
   injectText({ text }) {
-    if (!this.controlSock || this.controlSock.destroyed) return
+    this._sendClipboard(text, true, '텍스트 이벤트')
+  }
 
+  setClipboard(text) {
+    if (!this.controlSock || this.controlSock.destroyed || typeof text !== 'string') return
     const textBytes = Buffer.from(text, 'utf8')
-    // TYPE_SET_CLIPBOARD = 9
-    // sequence: 8 bytes (0n)
-    // paste: 1 byte (1 = true)
-    // length: 4 bytes
-    // text: variable
-    const buf = Buffer.alloc(14 + textBytes.length)
-    buf.writeUInt8(9, 0) // TYPE_SET_CLIPBOARD = 9
-    buf.writeBigInt64BE(0n, 1) // sequence: 0
-    buf.writeUInt8(1, 9) // paste: true
-    buf.writeUInt32BE(textBytes.length, 10) // length
-    textBytes.copy(buf, 14) // text
-
-    try {
-      this.controlSock.write(buf)
-    } catch (e) {
-      this.log('텍스트 이벤트 전송 실패: ' + e.message)
+    if (textBytes.length > 1024 * 1024) {
+      this.log('클립보드 동기화 생략 — 텍스트가 1MB를 넘습니다')
+      return
     }
+    this._sendClipboard(text, false, '클립보드 동기화')
+  }
+
+  _sendClipboard(text, paste, label) {
+    if (!this.controlSock || this.controlSock.destroyed) return
+    const textBytes = Buffer.from(text, 'utf8')
+    const sequence = ++this._clipboardSequence
+    const sequenceKey = sequence.toString()
+    this._pendingClipboardSequences.add(sequenceKey)
+    if (this._pendingClipboardSequences.size > 64) {
+      this._pendingClipboardSequences.delete(this._pendingClipboardSequences.values().next().value)
+    }
+    const buf = Buffer.alloc(14 + textBytes.length)
+    buf.writeUInt8(9, 0) // TYPE_SET_CLIPBOARD
+    buf.writeBigUInt64BE(sequence, 1)
+    buf.writeUInt8(paste ? 1 : 0, 9)
+    buf.writeUInt32BE(textBytes.length, 10)
+    textBytes.copy(buf, 14)
+    try { this.controlSock.write(buf) } catch (e) {
+      this._pendingClipboardSequences.delete(sequenceKey)
+      this.log(`${label} 전송 실패: ` + e.message)
+    }
+  }
+
+  _handleDeviceMessages(data) {
+    this._deviceMessageBuffer = Buffer.concat([this._deviceMessageBuffer, data])
+    const buf = this._deviceMessageBuffer
+    let offset = 0
+
+    while (buf.length - offset >= 1) {
+      const type = buf.readUInt8(offset)
+      let messageSize
+      if (type === 0) { // DEVICE_MSG_TYPE_CLIPBOARD: type + sequence + UTF-8 length + text
+        if (buf.length - offset < 13) break
+        const sequence = buf.readBigUInt64BE(offset + 1).toString()
+        const textLength = buf.readUInt32BE(offset + 9)
+        if (textLength > 1024 * 1024) {
+          this.log('기기 클립보드 메시지가 1MB를 넘어 무시합니다')
+          offset = buf.length
+          break
+        }
+        messageSize = 13 + textLength
+        if (buf.length - offset < messageSize) break
+        const text = buf.toString('utf8', offset + 13, offset + messageSize)
+        if (this._pendingClipboardSequences.delete(sequence)) {
+          this.log('기기 클립보드 에코 무시')
+        } else {
+          this.onClipboard?.(text)
+        }
+      } else if (type === 1) { // DEVICE_MSG_TYPE_ACK_CLIPBOARD
+        messageSize = 9
+        if (buf.length - offset < messageSize) break
+        this._pendingClipboardSequences.delete(buf.readBigUInt64BE(offset + 1).toString())
+      } else if (type === 2) { // DEVICE_MSG_TYPE_UHID_OUTPUT
+        if (buf.length - offset < 5) break
+        messageSize = 5 + buf.readUInt16BE(offset + 3)
+        if (buf.length - offset < messageSize) break
+      } else {
+        this.log(`알 수 없는 기기 메시지 유형: ${type}`)
+        offset = buf.length
+        break
+      }
+      offset += messageSize
+    }
+
+    this._deviceMessageBuffer = buf.subarray(offset)
   }
 
   // 파일명에서만 버전을 찾는다. 전체 경로를 훑으면 상위 폴더명의 숫자(예: proj-v2.0)를
@@ -733,5 +796,38 @@ if (require.main === module) {
     parseSessionMeta(hex('00000000 0000025e 00000500')),
     { width: 606, height: 1280, consumed: 12 })
 
-  console.log('mirror-bridge 자가진단 통과 — session_meta 8B/12B 레이아웃 판별')
+  const clipboardMessages = []
+  const bridge = new MirrorBridge({
+    adbPath: 'adb',
+    binDir: '.',
+    onClipboard: text => clipboardMessages.push(text),
+  })
+  const clipboardText = Buffer.from('테스트 클립보드', 'utf8')
+  const deviceClipboard = Buffer.alloc(13 + clipboardText.length)
+  deviceClipboard.writeUInt8(0, 0)
+  deviceClipboard.writeBigUInt64BE(7n, 1)
+  deviceClipboard.writeUInt32BE(clipboardText.length, 9)
+  clipboardText.copy(deviceClipboard, 13)
+  bridge._handleDeviceMessages(deviceClipboard.subarray(0, 6))
+  assert.deepStrictEqual(clipboardMessages, [], '분할된 클립보드 메시지를 조기 처리했다')
+  bridge._handleDeviceMessages(deviceClipboard.subarray(6))
+  assert.deepStrictEqual(clipboardMessages, ['테스트 클립보드'], '기기 클립보드 메시지 파싱 실패')
+
+  let sentClipboard
+  bridge.controlSock = { destroyed: false, write: data => { sentClipboard = Buffer.from(data) } }
+  bridge.setClipboard('PC 클립보드')
+  assert.strictEqual(sentClipboard.readUInt8(0), 9, 'SET_CLIPBOARD 유형이 잘못됐다')
+  assert.strictEqual(sentClipboard.readBigUInt64BE(1), 1n)
+  assert.strictEqual(sentClipboard.readUInt8(9), 0, '자동 동기화에서 붙여넣기가 실행됐다')
+  assert.strictEqual(sentClipboard.readUInt32BE(10), Buffer.byteLength('PC 클립보드'))
+  assert.strictEqual(sentClipboard.toString('utf8', 14), 'PC 클립보드')
+  const echo = Buffer.from(deviceClipboard)
+  echo.writeBigUInt64BE(1n, 1)
+  bridge._handleDeviceMessages(echo)
+  assert.deepStrictEqual(clipboardMessages, ['테스트 클립보드'], 'PC에서 보낸 클립보드 에코를 무시하지 못했다')
+  bridge.injectText({ text: '키 입력' })
+  assert.strictEqual(sentClipboard.readBigUInt64BE(1), 2n)
+  assert.strictEqual(sentClipboard.readUInt8(9), 1, '키보드 폴백에서 붙여넣기가 실행되지 않았다')
+
+  console.log('mirror-bridge 자가진단 통과 — session_meta·클립보드 프로토콜')
 }
