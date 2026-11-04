@@ -1,12 +1,13 @@
 {
   "name": "droidbridge",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Android control center powered by scrcpy",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
     "check": "node --check public/renderer.js && node src/jira.js && node src/hid-keyboard.js && node src/mirror-bridge.js",
+    "prebuild:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./prepare-mirros.ps1",
     "build:win": "electron-builder --win --publish never",
     "build:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never",
     "build:linux": "electron-builder --linux --publish never",
@@ -27,9 +28,11 @@
       "**/*",
       "!dist*/**",
       "!bin/**",
+      "!build-assets/**",
       "!docs/**",
       "!.omc/**",
       "!.notarize.env",
+      "!MIRROS-NOTICE.txt",
       "!*.{md,bat,command,ps1}"
     ],
     "extraResources": [
@@ -42,7 +45,21 @@
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "extraResources": [
+        {
+          "from": "build-assets/mirros",
+          "to": "mirros",
+          "filter": [
+            "MirrOS.exe",
+            "MirrOS-Source.zip"
+          ]
+        },
+        {
+          "from": "MIRROS-NOTICE.txt",
+          "to": "mirros/MIRROS-NOTICE.txt"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,

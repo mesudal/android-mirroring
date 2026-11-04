@@ -9,6 +9,12 @@ const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
 
+const MIRROS_RELEASE_URL = 'https://github.com/Cristiant2608/mirros/releases/latest'
+const MIRROS_CFG = path.join(app.getPath('userData'), 'mirros.json')
+const MIRROS_BUNDLED_EXE = app.isPackaged && process.platform === 'win32'
+  ? path.join(process.resourcesPath, 'mirros', 'MirrOS.exe')
+  : ''
+
 const isDev = process.argv.includes('--dev')
 let binDir = app.isPackaged
   ? path.join(process.resourcesPath, 'bin')
@@ -680,6 +686,91 @@ ipcMain.handle('dialog:openVideo', async () => {
     filters: [{ name: '영상', extensions: ['mp4', 'mkv', 'webm', 'mov', 'avi', 'gif'] }],
   })
   return (filePaths && filePaths[0]) || ''
+})
+
+function getMirrosExePath() {
+  let configuredPath = ''
+  try {
+    const config = JSON.parse(fs.readFileSync(MIRROS_CFG, 'utf8'))
+    if (typeof config.exePath === 'string' && fs.existsSync(config.exePath)) configuredPath = config.exePath
+  } catch { }
+  if (configuredPath) return configuredPath
+  return MIRROS_BUNDLED_EXE && fs.existsSync(MIRROS_BUNDLED_EXE) ? MIRROS_BUNDLED_EXE : ''
+}
+
+ipcMain.handle('mirros:status', () => {
+  if (platform !== 'win32') return { available: false }
+  const exePath = getMirrosExePath()
+  const bundled = !!exePath && exePath === MIRROS_BUNDLED_EXE
+  return {
+    available: true,
+    configured: !!exePath && fs.existsSync(exePath),
+    bundled,
+    name: bundled ? 'MirrOS.exe (설치본 포함)' : exePath ? path.basename(exePath) : '',
+  }
+})
+
+ipcMain.handle('mirros:select', async () => {
+  if (platform !== 'win32') return { ok: false, message: 'MirrOS 실행은 Windows에서만 지원합니다.' }
+  const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow, {
+    title: 'MirrOS 실행 파일 선택',
+    filters: [{ name: 'MirrOS 실행 파일', extensions: ['exe'] }],
+    properties: ['openFile'],
+  })
+  if (canceled || !filePaths?.[0]) return { ok: false, canceled: true }
+
+  const exePath = filePaths[0]
+  try {
+    if (path.extname(exePath).toLowerCase() !== '.exe' || !fs.statSync(exePath).isFile()) {
+      return { ok: false, message: '유효한 MirrOS EXE 파일을 선택해 주세요.' }
+    }
+    fs.writeFileSync(MIRROS_CFG, JSON.stringify({ exePath }, null, 2), 'utf8')
+    return { ok: true, name: path.basename(exePath) }
+  } catch (error) {
+    return { ok: false, message: `MirrOS 경로를 저장하지 못했습니다: ${error.message}` }
+  }
+})
+
+ipcMain.handle('mirros:open-release', async () => {
+  try {
+    await shell.openExternal(MIRROS_RELEASE_URL)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, message: `MirrOS 릴리즈 페이지를 열지 못했습니다: ${error.message}` }
+  }
+})
+
+ipcMain.handle('mirros:launch', async () => {
+  if (platform !== 'win32') return { ok: false, message: 'MirrOS 실행은 Windows에서만 지원합니다.' }
+  const exePath = getMirrosExePath()
+  if (!exePath) {
+    try {
+      await shell.openExternal(MIRROS_RELEASE_URL)
+      return { ok: false, needsSetup: true, message: '공식 릴리즈 페이지를 열었습니다. MirrOS EXE를 내려받아 경로를 선택해 주세요.' }
+    } catch (error) {
+      return { ok: false, message: `MirrOS 릴리즈 페이지를 열지 못했습니다: ${error.message}` }
+    }
+  }
+  try {
+    if (path.extname(exePath).toLowerCase() !== '.exe' || !fs.statSync(exePath).isFile()) {
+      return { ok: false, message: '저장된 MirrOS EXE를 찾을 수 없습니다. 실행 파일을 다시 선택해 주세요.' }
+    }
+  } catch {
+    return { ok: false, message: '저장된 MirrOS EXE를 찾을 수 없습니다. 실행 파일을 다시 선택해 주세요.' }
+  }
+
+  return new Promise(resolve => {
+    try {
+      const proc = spawn(exePath, [], { cwd: path.dirname(exePath), detached: true, stdio: 'ignore' })
+      proc.once('error', error => resolve({ ok: false, message: `MirrOS를 실행하지 못했습니다: ${error.message}` }))
+      proc.once('spawn', () => {
+        proc.unref()
+        resolve({ ok: true, message: 'MirrOS를 별도 창으로 실행했습니다.' })
+      })
+    } catch (error) {
+      resolve({ ok: false, message: `MirrOS를 실행하지 못했습니다: ${error.message}` })
+    }
+  })
 })
 
 // APK 설치

@@ -3099,6 +3099,56 @@ async function submitJira() {
 
 loadJiraSettings()
 
+async function refreshMirrosStatus() {
+  const statusEl = $('mirrosStatus')
+  const launchButton = $('mirrosLaunchButton')
+  const selectButton = $('mirrosSelectButton')
+  const releaseButton = $('mirrosReleaseButton')
+  try {
+    const status = await window.db.mirrosStatus()
+    if (statusEl) {
+      statusEl.textContent = !status.available ? 'Windows 전용 기능'
+        : status.configured ? status.name : '포함된 실행 파일을 찾을 수 없습니다'
+    }
+    if (!status.available) {
+      if (launchButton) launchButton.disabled = true
+      if (selectButton) selectButton.disabled = true
+      if (releaseButton) releaseButton.disabled = true
+    }
+  } catch (error) {
+    if (statusEl) statusEl.textContent = '상태를 확인하지 못했습니다'
+    console.warn('MirrOS 상태 확인 실패:', error)
+  }
+}
+
+async function selectMirrosExe() {
+  const result = await window.db.selectMirrosExe()
+  if (result.canceled) return
+  if (!result.ok) { showToast(result.message || 'MirrOS 실행 파일을 저장하지 못했습니다', true); return }
+  setText('mirrosStatus', result.name)
+  showToast('MirrOS 실행 파일을 저장했습니다')
+}
+
+async function openMirrosRelease() {
+  const result = await window.db.openMirrosRelease()
+  if (!result.ok) showToast(result.message || '공식 릴리즈 페이지를 열지 못했습니다', true)
+}
+
+async function launchMirros() {
+  const result = await window.db.launchMirros()
+  if (result.needsSetup) {
+    showToast(result.message, true)
+    return
+  }
+  if (!result.ok) {
+    showToast(result.message || 'MirrOS를 실행하지 못했습니다', true)
+    return
+  }
+  showToast(result.message)
+}
+
+refreshMirrosStatus()
+
 // ── 세팅 자동 점검 ──────────────────────────────────────────────
 // 예전엔 미러링 탭 위에 배너로 띄웠는데, 자리만 차지해서 미러링 로그 패널로 옮겼다.
 let lastSetupSig = null   // 5초마다 도는 점검이라 내용이 바뀔 때만 남긴다 (같은 줄 도배 방지)
