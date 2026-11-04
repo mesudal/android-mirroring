@@ -765,6 +765,24 @@
     </div>
   </div>
 
+  <div class="overlay update-overlay" id="updateOverlay">
+    <div class="modal update-modal" role="dialog" aria-modal="true" aria-labelledby="updateTitle">
+      <div class="update-icon"><i class="ti ti-sparkles"></i></div>
+      <div class="update-eyebrow">DROIDBRIDGE 업데이트</div>
+      <h2 id="updateTitle">새 버전을 사용할 수 있습니다</h2>
+      <p id="updateDescription">업데이트를 다운로드한 뒤 앱이 자동으로 재시작됩니다.</p>
+      <div class="update-progress" id="updateProgressWrap" hidden>
+        <div class="update-progress-track"><span id="updateProgressBar"></span></div>
+        <div class="update-progress-label" id="updateProgressLabel">다운로드 준비 중...</div>
+      </div>
+      <div class="update-error" id="updateError" hidden></div>
+      <div class="update-actions">
+        <button class="btn-primary" id="updateActionBtn" onclick="runUpdateAction()">다운로드 및 설치</button>
+        <button class="btn-sm" id="updateLaterBtn" onclick="closeUpdateDialog()">나중에</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast"><i class="ti ti-check" id="toastIcon"></i><span id="toastMsg"></span></div>
   <script src="renderer.js"></script>
 </body>

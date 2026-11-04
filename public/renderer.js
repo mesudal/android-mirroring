@@ -1297,6 +1297,91 @@ window.db.onRecordEnded((status, serial) => {
   const device = deviceSlots.find(slot => slot.serial === serial)
   if (device?.recording) withActiveDevice(device, () => finishRecording(status.message || '기기 녹화가 예기치 않게 종료되었습니다'))
 })
+let updateDialogState = 'idle'
+let pendingUpdateVersion = ''
+
+function showUpdateDialog() {
+  document.getElementById('updateOverlay')?.classList.add('open')
+}
+
+function closeUpdateDialog() {
+  document.getElementById('updateOverlay')?.classList.remove('open')
+}
+
+function renderUpdateDialog(status) {
+  const title = document.getElementById('updateTitle')
+  const description = document.getElementById('updateDescription')
+  const progressWrap = document.getElementById('updateProgressWrap')
+  const progressBar = document.getElementById('updateProgressBar')
+  const progressLabel = document.getElementById('updateProgressLabel')
+  const error = document.getElementById('updateError')
+  const action = document.getElementById('updateActionBtn')
+  const later = document.getElementById('updateLaterBtn')
+  if (!title || !description || !action || !later) return
+
+  if (status.version) pendingUpdateVersion = status.version
+  updateDialogState = status.state
+  error.hidden = true
+  progressWrap.hidden = true
+  later.hidden = false
+  later.textContent = '나중에'
+  action.disabled = false
+
+  if (status.state === 'available') {
+    title.textContent = '새 버전을 사용할 수 있습니다'
+    description.textContent = `DroidBridge ${pendingUpdateVersion} 업데이트가 준비되어 있습니다. 다운로드 후 한 번만 재시작하면 적용됩니다.`
+    action.textContent = '다운로드 및 설치'
+    showUpdateDialog()
+  } else if (status.state === 'downloading') {
+    title.textContent = '업데이트 다운로드 중'
+    description.textContent = `${pendingUpdateVersion ? `DroidBridge ${pendingUpdateVersion}을(를) ` : ''}다운로드하는 동안 평소처럼 앱을 사용할 수 있습니다.`
+    progressWrap.hidden = false
+    const percent = Math.max(0, Math.min(100, status.percent || 0))
+    progressBar.style.width = `${percent}%`
+    progressLabel.textContent = percent ? `${percent}% 다운로드됨` : '다운로드 준비 중...'
+    action.textContent = '다운로드 중...'
+    action.disabled = true
+    later.textContent = '백그라운드에서 계속'
+    showUpdateDialog()
+  } else if (status.state === 'downloaded') {
+    title.textContent = '업데이트 설치 준비 완료'
+    description.textContent = `DroidBridge ${pendingUpdateVersion}을(를) 적용하려면 앱을 재시작하세요. 업데이트 설치와 앱 다시 열기는 자동으로 진행됩니다.`
+    progressWrap.hidden = false
+    progressBar.style.width = '100%'
+    progressLabel.textContent = '다운로드 완료'
+    action.textContent = '지금 다시 시작'
+    later.textContent = '나중에 설치'
+    showUpdateDialog()
+  } else if (status.state === 'error' && status.source === 'download') {
+    title.textContent = '업데이트를 다운로드하지 못했습니다'
+    description.textContent = '인터넷 연결을 확인한 뒤 다시 시도해 주세요.'
+    error.textContent = status.message || '알 수 없는 오류가 발생했습니다.'
+    error.hidden = false
+    action.textContent = '다시 시도'
+    showUpdateDialog()
+  }
+}
+
+async function runUpdateAction() {
+  const action = document.getElementById('updateActionBtn')
+  if (action) action.disabled = true
+  if (updateDialogState === 'downloaded') {
+    const result = await window.db.installAppUpdate()
+    if (!result.ok) {
+      if (action) action.disabled = false
+      showToast(result.message || '업데이트 설치를 시작하지 못했습니다', true)
+    }
+    return
+  }
+  updateDialogState = 'downloading'
+  renderUpdateDialog({ state: 'downloading', percent: 0, version: pendingUpdateVersion })
+  const result = await window.db.downloadAppUpdate()
+  if (!result.ok && result.reason === 'unavailable') {
+    showToast('배포 버전에서만 업데이트를 설치할 수 있습니다', true)
+    closeUpdateDialog()
+  }
+}
+
 window.db.onUpdateStatus(status => {
   const label = $('updateStatus')
   const button = $('updateCheckBtn')
@@ -1309,10 +1394,10 @@ window.db.onUpdateStatus(status => {
     else if (status.state === 'error') label.textContent = '업데이트 확인 실패'
   }
   if (button) button.disabled = ['checking', 'downloading', 'downloaded'].includes(status.state)
+  if (['available', 'downloading', 'downloaded'].includes(status.state) ||
+      (status.state === 'error' && status.source === 'download')) renderUpdateDialog(status)
   if (status.state === 'current' && status.manual) showToast(`최신 버전입니다 (${status.version})`)
-  if (status.state === 'error' && status.manual) showToast('업데이트 확인 실패: ' + status.message, true)
-  if (status.state === 'downloading') showToast(`업데이트 다운로드 중 ${status.percent}%`, false, true)
-  if (status.state === 'downloaded') showToast(`버전 ${status.version} 업데이트 준비 완료`)
+  if (status.state === 'error' && status.manual && status.source !== 'download') showToast('업데이트 확인 실패: ' + status.message, true)
 })
 
 async function checkForAppUpdates() {

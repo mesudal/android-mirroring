@@ -52,6 +52,8 @@ contextBridge.exposeInMainWorld('db', {
   // 세팅
   setupCheck: () => ipcRenderer.invoke('setup:check'),
   checkForUpdates: () => ipcRenderer.invoke('app:update-check'),
+  downloadAppUpdate: () => ipcRenderer.invoke('app:update-download'),
+  installAppUpdate: () => ipcRenderer.invoke('app:update-install'),
   onUpdateStatus: (cb) => {
     ipcRenderer.removeAllListeners('app:update-status')
     ipcRenderer.on('app:update-status', (_, status) => cb(status))

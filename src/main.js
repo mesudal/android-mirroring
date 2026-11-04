@@ -77,7 +77,6 @@ let lastDesktopClipboard = null
 let proxyServer = null
 let certManager = null
 let updateCheckInProgress = false
-let updatePromptOpen = false
 let manualUpdateCheck = false
 
 // 미러링 로그를 파일로도 남긴다. 사용자가 "안 된다"고 할 때 이 파일 하나면 원인이
@@ -127,32 +126,8 @@ function setupAutoUpdater() {
   })
   autoUpdater.on('update-available', async info => {
     logMirror(`[업데이트] 새 버전 발견: ${info.version}`)
-    if (updatePromptOpen) return
-    updatePromptOpen = true
     manualUpdateCheck = false
-    try {
-      const { response } = await dialog.showMessageBox(mainWindow, {
-        type: 'info',
-        title: '업데이트 확인',
-        message: `새 버전 ${info.version}을(를) 사용할 수 있습니다.`,
-        detail: '지금 다운로드하고 설치할까요?',
-        buttons: ['다운로드', '나중에'],
-        defaultId: 0,
-        cancelId: 1,
-      })
-      if (response !== 0) {
-        sendUpdateStatus({ state: 'available', version: info.version })
-        return
-      }
-      sendUpdateStatus({ state: 'downloading', percent: 0 })
-      logMirror(`[업데이트] ${info.version} 다운로드 시작`)
-      await autoUpdater.downloadUpdate()
-    } catch (error) {
-      logMirror(`[업데이트] 다운로드 실패: ${error.message}`)
-      sendUpdateStatus({ state: 'error', message: error.message, manual: true })
-    } finally {
-      updatePromptOpen = false
-    }
+    sendUpdateStatus({ state: 'available', version: info.version })
   })
   autoUpdater.on('download-progress', progress => {
     sendUpdateStatus({ state: 'downloading', percent: Math.floor(progress.percent) })
@@ -160,20 +135,6 @@ function setupAutoUpdater() {
   autoUpdater.on('update-downloaded', async info => {
     logMirror(`[업데이트] ${info.version} 다운로드 완료`)
     sendUpdateStatus({ state: 'downloaded', version: info.version })
-    try {
-      const { response } = await dialog.showMessageBox(mainWindow, {
-        type: 'info',
-        title: '업데이트 준비 완료',
-        message: `${info.version} 업데이트를 설치할 준비가 됐습니다.`,
-        detail: '지금 다시 시작하거나, 앱을 종료할 때 설치할 수 있습니다.',
-        buttons: ['지금 다시 시작', '종료할 때 설치'],
-        defaultId: 0,
-        cancelId: 1,
-      })
-      if (response === 0) autoUpdater.quitAndInstall()
-    } catch (error) {
-      logMirror(`[업데이트] 설치 안내 창을 열지 못했습니다: ${error.message}`)
-    }
   })
   autoUpdater.on('error', error => {
     logMirror(`[업데이트] 오류: ${error.message}`)
@@ -312,6 +273,27 @@ app.on('window-all-closed', () => { if (platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (!mainWindow) createWindow() })
 
 ipcMain.handle('app:update-check', () => startUpdateCheck(true))
+ipcMain.handle('app:update-download', async () => {
+  if (!app.isPackaged || platform !== 'win32' || isDev) {
+    return { ok: false, reason: 'unavailable' }
+  }
+  try {
+    sendUpdateStatus({ state: 'downloading', percent: 0 })
+    await autoUpdater.downloadUpdate()
+    return { ok: true }
+  } catch (error) {
+    logMirror(`[업데이트] 다운로드 실패: ${error.message}`)
+    sendUpdateStatus({ state: 'error', source: 'download', message: error.message, manual: true })
+    return { ok: false, message: error.message }
+  }
+})
+ipcMain.handle('app:update-install', () => {
+  if (!app.isPackaged || platform !== 'win32' || isDev) {
+    return { ok: false, reason: 'unavailable' }
+  }
+  autoUpdater.quitAndInstall(true, true)
+  return { ok: true }
+})
 
 // ── ADB 유틸 ──────────────────────────────────────────────────
 function runAdb(args) {
