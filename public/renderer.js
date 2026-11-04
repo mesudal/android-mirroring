@@ -282,18 +282,30 @@ function setConnected(name) {
 // ── 현재 화면(Activity) 조회 ───────────────────────────────────
 function startActivityPolling(device = activeDevice) {
   stopActivityPolling(device)
+  let requestPending = false
   device.activityInterval = setInterval(async () => {
-    if (!device.serial) return
-    const r = await window.db.getCurrentActivity(device.serial)
-    const name = r.ok ? r.activity : '—'
-    device.currentActivityName = r.ok ? r.activity : null
-    if (r.ok && r.activity.includes('/')) refreshAppInfo(r.activity.split('/')[0], device)
-    const activityEl = slotElement(device, 'slotActivity')
-    if (activityEl) activityEl.textContent = name
-    // 두 표시를 독립적으로 갱신한다. 예전에는 activityText(연결 정보 카드) 존재 여부에
-    // 묶여 있어서, 그 카드를 주석처리하자 Activity 표시가 통째로 멈췄다.
-    const header = slotElement(device, 'slotActivity')
-    if (header) header.title = name
+    const serial = device.serial
+    if (!serial || requestPending) return
+    requestPending = true
+    try {
+      const r = await window.db.getCurrentActivity(serial)
+      if (device.serial !== serial) return
+      const name = r.ok ? r.activity : '—'
+      device.currentActivityName = r.ok ? r.activity : null
+      if (r.ok && r.activity.includes('/')) refreshAppInfo(r.activity.split('/')[0], device)
+      const activityEl = slotElement(device, 'slotActivity')
+      if (activityEl) activityEl.textContent = name
+      // 두 표시를 독립적으로 갱신한다. 예전에는 activityText(연결 정보 카드) 존재 여부에
+      // 묶여 있어서, 그 카드를 주석처리하자 Activity 표시가 통째로 멈췄다.
+      const header = slotElement(device, 'slotActivity')
+      if (header) header.title = name
+    } catch (error) {
+      if (device.serial === serial) {
+        withActiveDevice(device, () => mirrorLog('현재 화면 조회 실패: ' + error.message))
+      }
+    } finally {
+      requestPending = false
+    }
   }, 2000)
 }
 
@@ -1063,7 +1075,9 @@ function renderLogcat() {
 }
 
 function escapeHtml(s) {
-  return s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]))
 }
 
 // 위로 올려 읽는 중일 때만 '최신 로그' 버튼을 띄운다
@@ -1636,7 +1650,10 @@ function connectMirrorWs(canvas, wsPort, session) {
         logMirror('WS 최대 재시도 초과 → 미러링 중단')
         showToast('미러링 연결 오류 — 로그를 확인해 주세요', true)
         state.mirroring = false
+        device.mirrorSession++
         resetPhoneScreen()
+        window.db.stopMirror(device.serial).catch(error =>
+          withActiveDevice(device, () => mirrorLog('미러링 정리 실패: ' + (error.message || String(error)))))
       }
     })
     ws.onclose = (ev) => withActiveDevice(device, () => {
@@ -1679,24 +1696,31 @@ async function startMirror() {
   if (!canvas) { device.mirroring = false; return }
 
   // 동적 웹소켓 포트 요청 및 초기화
-  const wsPort = await window.db.initMirror(device.serial)
-  if (session !== device.mirrorSession) return
+  let r
+  try {
+    const wsPort = await window.db.initMirror(device.serial)
+    if (session !== device.mirrorSession) return
 
-  // WS 연결 시도 (bridge보다 먼저 시작 — retry로 버팀)
-  withActiveDevice(device, () => connectMirrorWs(canvas, wsPort, session))
+    // WS 연결 시도 (bridge보다 먼저 시작 — retry로 버팀)
+    withActiveDevice(device, () => connectMirrorWs(canvas, wsPort, session))
 
-  // bridge 시작 (jar 푸시 + 서버 실행 + 소켓 연결)
-  const r = await window.db.startMirror({
-    serial: device.serial,
-    videoBitrate: bitrate,
-    maxSize: device.maxSize || 0,
-    fps,
-  })
+    // bridge 시작 (jar 푸시 + 서버 실행 + 소켓 연결)
+    r = await window.db.startMirror({
+      serial: device.serial,
+      videoBitrate: bitrate,
+      maxSize: device.maxSize || 0,
+      fps,
+    })
+  } catch (error) {
+    r = { ok: false, message: error.message || String(error) }
+  }
   if (session !== device.mirrorSession) return
 
   if (!r.ok) {
     device.mirroring = false
-    withActiveDevice(device, () => { stopDecoder(); resetPhoneScreen() })
+    withActiveDevice(device, () => { stopDecoder(); closeMirrorWs(); resetPhoneScreen() })
+    window.db.stopMirror(device.serial).catch(error =>
+      withActiveDevice(device, () => mirrorLog('미러링 정리 실패: ' + (error.message || String(error)))))
     if (logEl) logEl.textContent += '\n[ERROR] ' + (r.message || '알 수 없는 오류') + '\n'
     showToast('미러링 실패 — 로그 패널 확인', true)
     withActiveDevice(device, updateMirrorToggle)
@@ -2024,8 +2048,9 @@ function copyRecordingPath() {
 // ── APK 설치 ───────────────────────────────────────────────────
 async function openApkPicker() {
   if (!requireDevice()) return
+  const serial = state.serial
   const paths = await window.db.openApkDialog()
-  paths.forEach(p => installApk(p))
+  paths.forEach(p => installApk(p, serial))
 }
 
 async function handleApkDrop(e) {
@@ -2044,12 +2069,14 @@ async function handleApkDrop(e) {
 // 설치 자체는 installApk() 가 이미 다 한다(진행 UI + 토스트 + adb install -r).
 // 여기서는 확인만 받는다. 실수로 떨어뜨렸을 때 바로 설치되면 곤란하기 때문이다.
 let pendingApks = []
+let pendingApkSerial = null
 let installsInFlight = 0   // 동시 설치 시 마지막 완료까지 진행 표시를 유지하기 위한 카운터
 let installSeq = 0         // 설치 항목 element id 충돌 방지용 순번
 
 // APK 면 설치를, 그 밖의 파일이면 Download 폴더로 전송을 묻는다.
 // 파일 탭이 없어졌으므로 이 경로가 유일한 파일 전송 수단이다.
 let pendingPush = []
+let pendingPushSerial = null
 
 function handleMirrorDrop(e) {
   e.preventDefault()
@@ -2057,17 +2084,23 @@ function handleMirrorDrop(e) {
   const files = [...e.dataTransfer.files]
   if (!files.length) return
   if (!requireDevice()) return
+  const serial = state.serial
 
   const isApk = f => /\.(apk|xapk)$/i.test(f.name)
   const apks = files.filter(isApk)
   const others = files.filter(f => !isApk(f))
 
   if (apks.length) {
+    if (others.length) {
+      showToast('APK와 일반 파일은 나누어 드롭해 주세요', true)
+      return
+    }
     if (apks.some(f => !f.path)) {
       showToast('APK 파일 경로를 읽을 수 없습니다. 파일 선택 버튼으로 다시 선택해 주세요.', true)
       return
     }
     pendingApks = apks.map(f => f.path)
+    pendingApkSerial = serial
     setText('apkConfirmText', apks.length === 1
       ? `${apks[0].name} 를 설치하시겠습니까?`
       : `${apks[0].name} 외 ${apks.length - 1}개를 설치하시겠습니까?`)
@@ -2076,6 +2109,7 @@ function handleMirrorDrop(e) {
   }
 
   pendingPush = others.map(f => ({ path: f.path, name: f.name }))
+  pendingPushSerial = serial
   setText('pushConfirmText', others.length === 1
     ? `${others[0].name} 를 전송하시겠습니까?`
     : `${others[0].name} 외 ${others.length - 1}개를 전송하시겠습니까?`)
@@ -2106,36 +2140,47 @@ window.addEventListener('drop', e => {
 async function confirmPush() {
   $('pushConfirmOverlay')?.classList.remove('open')
   const list = pendingPush
+  const serial = pendingPushSerial
   pendingPush = []
+  pendingPushSerial = null
   if (!list.length) return
+  if (!serial) { showToast('파일을 보낼 기기를 찾을 수 없습니다', true); return }
 
   for (const f of list) {
     showToast(`${f.name} 전송 중...`, false, true)
-    const r = await window.db.pushFile({
-      serial: state.serial,
-      localPath: f.path,
-      remotePath: '/sdcard/Download/' + f.name,
-    })
-    if (r.ok) showToast(`${f.name} 전송 완료 — Download 폴더`)
-    else showToast(`${f.name} 전송 실패: ${r.message || ''}`, true)
+    try {
+      const r = await window.db.pushFile({
+        serial,
+        localPath: f.path,
+        remotePath: '/sdcard/Download/' + f.name,
+      })
+      if (r.ok) showToast(`${f.name} 전송 완료 — Download 폴더`)
+      else showToast(`${f.name} 전송 실패: ${r.message || ''}`, true)
+    } catch (error) {
+      showToast(`${f.name} 전송 실패: ${error.message}`, true)
+    }
   }
 }
 
 function cancelPush() {
   $('pushConfirmOverlay')?.classList.remove('open')
   pendingPush = []
+  pendingPushSerial = null
 }
 
 function confirmApkInstall() {
   $('apkConfirmOverlay').classList.remove('open')
   const list = pendingApks
+  const serial = pendingApkSerial
   pendingApks = []
-  list.forEach(installApk)          // 진행 상황은 APK 설치 탭 + 완료 토스트
+  pendingApkSerial = null
+  list.forEach(apkPath => installApk(apkPath, serial)) // 진행 상황은 APK 설치 탭 + 완료 토스트
 }
 
 function cancelApkInstall() {
   $('apkConfirmOverlay').classList.remove('open')
   pendingApks = []
+  pendingApkSerial = null
 }
 
 // adb 는 실패 사유를 stderr 로만 흘린다(실측):
@@ -2167,11 +2212,12 @@ function installErrorReason(output) {
   return line.replace(/^adb(\.exe)?:\s*/, '').slice(0, 140)
 }
 
-async function installApk(apkPath) {
+async function installApk(apkPath, serial = state.serial) {
   if (typeof apkPath !== 'string' || !apkPath.trim()) {
     showToast('APK 파일 경로를 읽을 수 없습니다. 파일 선택 버튼으로 다시 선택해 주세요.', true)
     return
   }
+  if (!serial) { showToast('APK를 설치할 기기를 찾을 수 없습니다', true); return }
   const name = apkPath.split(/[\\/]/).pop()
   // 진행 UI 는 'APK 설치' 탭에만 있어서 다른 탭(특히 미러링)에서는 완료될 때까지
   // 아무 반응이 없어 보인다. 어느 화면에 있든 보이도록 토스트를 띄워 둔다.
@@ -2187,7 +2233,7 @@ async function installApk(apkPath) {
   const item = document.createElement('div')
   item.className = 'install-item'
   item.innerHTML = `<i class="ti ti-package"></i>
-    <div class="install-info"><p>${name}</p><span id="${msgId}">설치 중...</span>
+    <div class="install-info"><p>${escapeHtml(name)}</p><span id="${msgId}">설치 중...</span>
       <div class="progress-bar"><div class="progress-fill" id="${fillId}" style="width:5%"></div></div>
     </div><span class="install-status progress" id="${pctId}">설치 중</span>`
   queue.prepend(item)
@@ -2200,7 +2246,12 @@ async function installApk(apkPath) {
     if (el) el.style.width = pct.toFixed(0) + '%'
   }, 400)
 
-  const r = await window.db.install({ serial: state.serial, apkPath })
+  let r
+  try {
+    r = await window.db.install({ serial, apkPath })
+  } catch (error) {
+    r = { ok: false, output: error.message || String(error) }
+  }
   clearInterval(iv)
   const fill = $(fillId); const pctEl = $(pctId)
   if (fill) fill.style.width = '100%'
@@ -2230,21 +2281,23 @@ async function installApk(apkPath) {
 // ── 파일 전송 ──────────────────────────────────────────────────
 async function pushFileDialog() {
   if (!requireDevice()) return
+  const serial = state.serial
   const paths = await window.db.openFileDialog()
   if (!paths || !paths.length) return
   for (const localPath of paths) {
     const name = localPath.split(/[\\/]/).pop()
     const remotePath = '/sdcard/Download/' + name
-    const r = await window.db.pushFile({ serial: state.serial, localPath, remotePath })
+    const r = await window.db.pushFile({ serial, localPath, remotePath })
     addFileQueueItem(name, r.ok)
   }
 }
 
 async function pullFileDialog() {
   if (!requireDevice()) return
+  const serial = state.serial
   const remotePath = prompt('Android 경로를 입력하세요 (예: /sdcard/DCIM/photo.jpg)')
   if (!remotePath) return
-  const r = await window.db.pullFile({ serial: state.serial, remotePath })
+  const r = await window.db.pullFile({ serial, remotePath })
   if (r.ok) showToast('저장 완료: ' + r.path)
   else showToast('가져오기 실패', true)
 }
@@ -2252,10 +2305,11 @@ async function pullFileDialog() {
 async function handleFileDrop(e) {
   e.preventDefault()
   if (!requireDevice()) return
+  const serial = state.serial
   const files = [...e.dataTransfer.files]
   for (const f of files) {
     const r = await window.db.pushFile({
-      serial: state.serial,
+      serial,
       localPath: f.path,
       remotePath: '/sdcard/Download/' + f.name,
     })
@@ -2268,7 +2322,7 @@ function addFileQueueItem(name, ok) {
   const item = document.createElement('div')
   item.className = 'install-item'
   item.innerHTML = `<i class="ti ti-file" style="color:var(--accent2)"></i>
-    <div class="install-info"><p>${name}</p><span>/sdcard/Download/</span>
+    <div class="install-info"><p>${escapeHtml(name)}</p><span>/sdcard/Download/</span>
       <div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div>
     </div><span class="install-status ${ok ? 'done' : ''}" style="${ok ? '' : 'color:var(--red)'}">${ok ? '전송 완료' : '실패'}</span>`
   queue.prepend(item)
@@ -2292,7 +2346,7 @@ function isToolPanelCollapsed() {
 function toggleToolPanel() {
   const col = document.querySelector('.tool-col')
   if (col?.classList.contains('visible')) {
-    col.classList.remove('visible')
+    closeToolDrawer()
     return
   }
   if (!col) return
@@ -2302,16 +2356,30 @@ function toggleToolPanel() {
   changeScreenSize()   // 가용 너비가 달라졌으니 다시 잰다
 }
 
+let toolDrawerOrigin = null
+
 function toggleToolDrawer() {
   const col = document.querySelector('.tool-col')
   if (!col) return
   if (col.classList.contains('visible')) {
-    col.classList.remove('visible')
+    closeToolDrawer()
     return
   }
+  toolDrawerOrigin = { parent: col.parentNode, nextSibling: col.nextSibling }
   document.body.appendChild(col)
   col.classList.add('visible')
   switchPage('settings', document.querySelector('.tool-tab[onclick*="settings"]'))
+}
+
+function closeToolDrawer() {
+  const col = document.querySelector('.tool-col.visible')
+  if (!col) return
+  col.classList.remove('visible')
+  const origin = toolDrawerOrigin
+  toolDrawerOrigin = null
+  if (!origin?.parent?.isConnected) return
+  const before = origin.nextSibling?.parentNode === origin.parent ? origin.nextSibling : null
+  origin.parent.insertBefore(col, before)
 }
 
 function updateToolToggleIcon() {
@@ -2980,23 +3048,36 @@ loadJiraSettings()
 let lastSetupSig = null   // 5초마다 도는 점검이라 내용이 바뀔 때만 남긴다 (같은 줄 도배 방지)
 
 async function runSetupCheck() {
-  const r = await window.db.setupCheck()
-  const starter = r.platform === 'win32' ? 'Windows에서_시작.bat' : 'Mac_Linux에서_시작.command'
-  const issues = []
+  if (setupCheckInFlight) return
+  setupCheckInFlight = true
+  try {
+    const r = await window.db.setupCheck()
+    const starter = r.platform === 'win32' ? 'Windows에서_시작.bat' : 'Mac_Linux에서_시작.command'
+    const issues = []
 
-  if (!r.adb.found) issues.push(`adb를 찾을 수 없습니다 — 폴더 내의 ${starter} 을 실행하면 자동으로 설치됩니다`)
-  if (!r.scrcpy.found) issues.push(`scrcpy를 찾을 수 없습니다 — 폴더 내의 ${starter} 을 실행하면 자동으로 설치됩니다`)
-  if (r.adb.found && r.deviceCount === 0) {
-    issues.push('연결된 기기가 없습니다 — USB 연결 후 폰에서 "USB 디버깅 허용"을 눌러주세요 (Wi-Fi 연결도 가능)')
+    if (!r.adb.found) issues.push(`adb를 찾을 수 없습니다 — 폴더 내의 ${starter} 을 실행하면 자동으로 설치됩니다`)
+    if (!r.scrcpy.found) issues.push(`scrcpy를 찾을 수 없습니다 — 폴더 내의 ${starter} 을 실행하면 자동으로 설치됩니다`)
+    if (r.adb.found && r.deviceCount === 0) {
+      issues.push('연결된 기기가 없습니다 — USB 연결 후 폰에서 "USB 디버깅 허용"을 눌러주세요 (Wi-Fi 연결도 가능)')
+    }
+
+    const sig = issues.join('|')
+    if (sig === lastSetupSig) return
+    lastSetupSig = sig
+    if (issues.length) issues.forEach(i => mirrorLog('[세팅] ' + i))
+    else mirrorLog(`[세팅] 준비 완료 — adb ${r.adb.version || ''} / scrcpy ${r.scrcpy.version || ''}`.trimEnd())
+  } catch (error) {
+    const sig = 'error:' + (error.message || String(error))
+    if (sig !== lastSetupSig) {
+      lastSetupSig = sig
+      withActiveDevice(deviceSlots[0], () => mirrorLog('[세팅] 자동 점검 실패: ' + (error.message || String(error))))
+    }
+  } finally {
+    setupCheckInFlight = false
   }
-
-  const sig = issues.join('|')
-  if (sig === lastSetupSig) return
-  lastSetupSig = sig
-  if (issues.length) issues.forEach(i => mirrorLog('[세팅] ' + i))
-  else mirrorLog(`[세팅] 준비 완료 — adb ${r.adb.version || ''} / scrcpy ${r.scrcpy.version || ''}`.trimEnd())
 }
 
+let setupCheckInFlight = false
 runSetupCheck()
 setInterval(runSetupCheck, 5000) // 기기 연결/해제 자동 반영
 
@@ -3102,24 +3183,27 @@ function addPacketRow(pkt) {
   const tr = document.createElement('tr')
   tr.dataset.packetId = pkt.id
 
-  const methodClass = 'method-' + pkt.method.toLowerCase()
+  const method = String(pkt.method || '').toUpperCase()
+  const safeMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method) ? method : 'OTHER'
+  const methodClass = 'method-' + safeMethod.toLowerCase()
   let statusClass = ''
   if (pkt.statusCode >= 200 && pkt.statusCode < 300) statusClass = 'status-2xx'
   else if (pkt.statusCode >= 300 && pkt.statusCode < 400) statusClass = 'status-3xx'
   else if (pkt.statusCode >= 400 && pkt.statusCode < 500) statusClass = 'status-4xx'
   else if (pkt.statusCode >= 500) statusClass = 'status-5xx'
 
-  const protoClass = pkt.protocol === 'HTTPS' ? 'proto-https' : 'proto-http'
+  const protocol = pkt.protocol === 'HTTPS' ? 'HTTPS' : 'HTTP'
+  const protoClass = protocol === 'HTTPS' ? 'proto-https' : 'proto-http'
   const totalSize = (pkt.requestSize || 0) + (pkt.responseSize || 0)
   const time = new Date(pkt.timestamp)
-  const timeStr = time.toTimeString().split(' ')[0]
+  const timeStr = Number.isNaN(time.getTime()) ? '—' : time.toTimeString().split(' ')[0]
 
   tr.innerHTML = `
-    <td>${pkt.id}</td>
-    <td class="${protoClass}">${pkt.protocol}</td>
-    <td class="${methodClass}">${pkt.method}</td>
-    <td title="${pkt.url}">${pkt.host}${pkt.path}</td>
-    <td class="${statusClass}">${pkt.statusCode}</td>
+    <td>${escapeHtml(pkt.id)}</td>
+    <td class="${protoClass}">${protocol}</td>
+    <td class="${methodClass}">${safeMethod}</td>
+    <td title="${escapeHtml(pkt.url)}">${escapeHtml(pkt.host)}${escapeHtml(pkt.path)}</td>
+    <td class="${statusClass}">${escapeHtml(pkt.statusCode)}</td>
     <td>${formatSize(totalSize)}</td>
     <td>${timeStr}</td>
   `

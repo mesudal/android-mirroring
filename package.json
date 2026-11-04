@@ -1,6 +1,6 @@
 {
   "name": "droidbridge",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Android control center powered by scrcpy",
   "main": "src/main.js",
   "scripts": {
