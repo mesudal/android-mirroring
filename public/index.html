@@ -327,6 +327,20 @@
       <!-- 설정 -->
       <div class="page" id="page-settings">
         <div style="max-width:520px;display:flex;flex-direction:column;gap:12px">
+          <div class="ctrl-card">
+            <div class="ctrl-title">화면 테마</div>
+            <div class="info-rows">
+              <div class="info-row">
+                <label for="themeSelect" style="color:var(--muted)">앱 색상</label>
+                <select id="themeSelect" class="settings-input theme-select" onchange="setTheme(this.value)">
+                  <option value="forest">포레스트 · 밝고 차분한 녹색</option>
+                  <option value="graphite">그래파이트 · 어두운 앰버</option>
+                  <option value="ocean">오션 · 딥 네이비와 시안</option>
+                </select>
+              </div>
+              <p class="theme-help">선택하면 바로 적용되며 다음 실행에도 유지됩니다.</p>
+            </div>
+          </div>
           <!-- 미러링 탭에서 옮겨 왔다. 지금 연결된 기기에 바로 적용되는 값이다. -->
           <div class="ctrl-card">
             <div class="ctrl-title">화질 설정</div>

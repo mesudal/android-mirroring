@@ -2335,6 +2335,22 @@ requestAnimationFrame(() => {
 })
 
 // ── 설정 ───────────────────────────────────────────────────────
+const APP_THEMES = ['forest', 'graphite', 'ocean']
+const APP_THEME_NAMES = { forest: '포레스트', graphite: '그래파이트', ocean: '오션' }
+
+function applyTheme(theme) {
+  const selected = APP_THEMES.includes(theme) ? theme : 'forest'
+  document.documentElement.dataset.theme = selected
+  if ($('themeSelect')) $('themeSelect').value = selected
+  return selected
+}
+
+function setTheme(theme) {
+  const selected = applyTheme(theme)
+  localStorage.setItem('db_theme', selected)
+  showToast(`화면 테마가 ${APP_THEME_NAMES[selected]}로 변경되었습니다`)
+}
+
 // 단말의 물리 키보드 레이아웃 설정 화면을 연다. UHID 최초 사용 시 1회 필요하다.
 function openKeyboardSettings() {
   if (!mirrorWs || mirrorWs.readyState !== 1) {
@@ -2353,6 +2369,7 @@ function saveSettings() {
 }
 
 function loadSettings() {
+  applyTheme(localStorage.getItem('db_theme') || 'forest')
   const b = localStorage.getItem('db_bitrate')
   const f = localStorage.getItem('db_fps')
   if (b && $('defBitrate')) $('defBitrate').value = b

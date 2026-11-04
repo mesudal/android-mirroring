@@ -211,7 +211,7 @@ android-mirroring/
 │   └── cert-manager.js   # 프록시용 인증서 발급
 ├── public/
 │   ├── index.html        # UI 마크업
-│   ├── style.css         # 다크 테마
+│   ├── style.css         # 선택형 화면 테마
 │   └── renderer.js       # UI 로직 — WebCodecs 디코딩, 입력, LogCat, Jira 팝업
 └── docs/                 # TODO.md(알려진 결함), 스크린샷
 ```
