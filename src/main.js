@@ -264,9 +264,7 @@ app.whenReady().then(() => {
   setupAutoUpdater()
   createWindow()
   if (app.isPackaged && platform === 'win32' && !isDev) {
-    mainWindow.webContents.once('did-finish-load', () => {
-      setTimeout(() => { startUpdateCheck(false) }, 2000)
-    })
+    mainWindow.webContents.once('did-finish-load', () => { startUpdateCheck(false) })
   }
 })
 app.on('window-all-closed', () => { if (platform !== 'darwin') app.quit() })
