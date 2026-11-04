@@ -2421,7 +2421,12 @@ function toggleToolDrawer() {
     closeToolDrawer()
     return
   }
-  toolDrawerOrigin = { parent: col.parentNode, nextSibling: col.nextSibling }
+  toolDrawerOrigin = {
+    parent: col.parentNode,
+    nextSibling: col.nextSibling,
+    collapsed: col.classList.contains('collapsed'),
+  }
+  col.classList.remove('collapsed')
   document.body.appendChild(col)
   col.classList.add('visible')
   switchPage('settings', document.querySelector('.tool-tab[onclick*="settings"]'))
@@ -2433,9 +2438,12 @@ function closeToolDrawer() {
   col.classList.remove('visible')
   const origin = toolDrawerOrigin
   toolDrawerOrigin = null
-  if (!origin?.parent?.isConnected) return
-  const before = origin.nextSibling?.parentNode === origin.parent ? origin.nextSibling : null
-  origin.parent.insertBefore(col, before)
+  if (origin?.collapsed) col.classList.add('collapsed')
+  if (origin?.parent?.isConnected) {
+    const before = origin.nextSibling?.parentNode === origin.parent ? origin.nextSibling : null
+    origin.parent.insertBefore(col, before)
+  }
+  updateToolToggleIcon()
 }
 
 function updateToolToggleIcon() {
