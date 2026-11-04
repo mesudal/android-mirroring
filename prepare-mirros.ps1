@@ -9,6 +9,17 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $destination = Join-Path $root 'build-assets\mirros'
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 
+function Get-Sha256($path) {
+    $stream = [System.IO.File]::OpenRead($path)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Get-VerifiedAsset($asset, $target, $pinnedHash) {
     if (-not $asset.digest -or $asset.digest -notmatch '^sha256:([0-9a-fA-F]{64})$') {
         throw "GitHub release asset has no valid SHA-256 digest: $($asset.name)"
@@ -20,7 +31,7 @@ function Get-VerifiedAsset($asset, $target, $pinnedHash) {
     }
 
     if (Test-Path -LiteralPath $target) {
-        $existingHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+        $existingHash = Get-Sha256 $target
         if ($existingHash -eq $expectedHash) { return }
     }
 
@@ -29,7 +40,7 @@ function Get-VerifiedAsset($asset, $target, $pinnedHash) {
         Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $temporary -Headers @{
             'User-Agent' = 'DroidBridge-Windows-Build'
         }
-        $actualHash = (Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actualHash = Get-Sha256 $temporary
         if ($actualHash -ne $expectedHash) {
             throw "SHA-256 verification failed for $($asset.name)"
         }
