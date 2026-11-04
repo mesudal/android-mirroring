@@ -406,25 +406,26 @@ nav button, nav .conn-badge { -webkit-app-region:no-drag; }
 .setting-label { font-size:11px; color:var(--muted); margin-bottom:8px; font-weight:500; text-transform:uppercase; letter-spacing:.5px; }
 select { background:var(--surface2); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; padding:6px 10px; width:100%; margin-top:6px; cursor:pointer; }
 
-/* Two-device QA workspace */
+/* Up to three Android devices in the QA workspace */
 body { overflow:hidden; }
 .dual-topbar { height:54px; flex:0 0 54px; display:flex; align-items:center; gap:10px; padding:0 18px;
   background:var(--surface); border-bottom:1px solid var(--border); }
 .dual-topbar .logo small { color:var(--muted); font-size:11px; font-weight:400; margin-left:5px; }
+.dual-topbar .btn-sm:disabled { opacity:.45; cursor:not-allowed; }
 .dual-workspace { flex:1; min-height:0; display:grid; grid-template-rows:minmax(0,1fr) 8px var(--dual-log-height, 220px);
   gap:0; padding:10px; }
 .device-col.layout, .layout { display:none !important; }
 .device-panel { min-width:0; min-height:0; padding:10px; display:flex; flex-direction:column; gap:9px;
   background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); }
 .device-panel.active { border-color:var(--accent); }
-.device-panel:nth-of-type(2) { border-radius:var(--radius); }
-.dual-workspace { grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:10px; }
+.dual-workspace { grid-template-columns:repeat(var(--device-count,1),minmax(0,1fr)); column-gap:10px; }
 .dual-workspace > .device-panel { grid-row:1; }
-.dual-workspace > .device-panel:nth-of-type(2) { grid-column:2; }
 .device-panel-head { display:flex; align-items:center; gap:9px; min-height:34px; }
 .device-model { color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .device-status { margin-left:auto; color:var(--muted); font-size:11px; }
 .device-status.connected { color:var(--accent2); }
+.slot-disconnect { padding:6px 8px; }
+.slot-disconnect[hidden] { display:none; }
 .device-panel-body { flex:1; min-height:0; display:grid; grid-template-columns:44px minmax(0,1fr); gap:9px; }
 .device-side-tools { display:flex; flex-direction:column; align-items:center; gap:4px; padding:5px 3px;
   background:var(--surface2); border:1px solid var(--border); border-radius:9px; }

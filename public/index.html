@@ -12,14 +12,20 @@
 
 <body>
   <header class="dual-topbar">
-    <div class="logo"><span class="logo-dot"></span>DroidBridge <small>분할 보기</small></div>
+    <div class="logo"><span class="logo-dot"></span>DroidBridge <small>기기 분할 보기 · 최대 3대</small></div>
     <div class="nav-spacer"></div>
+    <button class="btn-sm" id="deviceAddButton" onclick="addDevicePanel()">
+      <i class="ti ti-device-plus"></i>기기 추가
+    </button>
   </header>
   <main class="dual-workspace">
     <section class="device-panel active" data-slot="A">
       <header class="device-panel-head">
         <strong>기기 A</strong><span class="device-model" data-role="slotModel">연결할 기기 선택</span>
         <button class="btn-sm" onclick="activateSlot('A');openConnectModal()"><i class="ti ti-plug"></i>기기 선택</button>
+        <button class="btn-sm slot-disconnect" data-role="slotDisconnectButton" onclick="activateSlot('A');disconnectDevice()" title="기기 연결 해제" hidden>
+          <i class="ti ti-plug-off"></i>
+        </button>
         <span class="device-status" data-role="slotStatus">미연결</span>
       </header>
       <div class="device-panel-body">
@@ -54,6 +60,9 @@
       <header class="device-panel-head">
         <strong>기기 B</strong><span class="device-model" data-role="slotModel">연결할 기기 선택</span>
         <button class="btn-sm" onclick="activateSlot('B');openConnectModal()"><i class="ti ti-plug"></i>기기 선택</button>
+        <button class="btn-sm slot-disconnect" data-role="slotDisconnectButton" onclick="activateSlot('B');disconnectDevice()" title="기기 연결 해제" hidden>
+          <i class="ti ti-plug-off"></i>
+        </button>
         <span class="device-status" data-role="slotStatus">미연결</span>
       </header>
       <div class="device-panel-body">
@@ -93,7 +102,8 @@
           <button class="btn-sm" id="logFilterBtn" onclick="toggleAppLogFilter()"
             title="현재 포그라운드 앱의 로그만 보기"><i class="ti ti-filter"></i>현재 앱만</button>
           <select id="dualLogDevice" onchange="setDualLogDevice(this.value)">
-            <option value="all">두 기기</option><option value="A">기기 A</option><option value="B">기기 B</option>
+            <option value="all">전체 기기</option><option value="A">기기 A</option><option value="B">기기 B</option>
+            <option value="C">기기 C</option>
           </select>
           <select id="logcatLevel" class="logcat-level" onchange="setLogcatLevel(this.value)">
             <option value="0">전체</option><option value="1">Debug 이상</option><option value="2">Info 이상</option><option value="3">Warn 이상</option><option value="4">Error 만</option>

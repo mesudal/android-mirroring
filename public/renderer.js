@@ -40,12 +40,32 @@ function createDeviceState(slot) {
   }
 }
 
-const deviceSlots = [createDeviceState('A'), createDeviceState('B')]
+const deviceSlots = [createDeviceState('A'), createDeviceState('B'), createDeviceState('C')]
 let activeDevice = deviceSlots[0]
 let mirrorLogListenerRegistered = false
 let dualLogTab = 'mirror'
 let dualLogDevice = 'all'
 const allLogEntries = []
+
+function createThirdDevicePanel() {
+  const workspace = document.querySelector('.dual-workspace')
+  const secondPanel = workspace?.querySelector('.device-panel[data-slot="B"]')
+  if (!workspace || !secondPanel || workspace.querySelector('.device-panel[data-slot="C"]')) return
+  const panel = secondPanel.cloneNode(true)
+  panel.dataset.slot = 'C'
+  panel.querySelector('strong').textContent = '기기 C'
+  panel.querySelectorAll('[onclick], [ondrop]').forEach(element => {
+    for (const attribute of ['onclick', 'ondrop']) {
+      const handler = element.getAttribute(attribute)
+      if (handler) element.setAttribute(attribute, handler.replaceAll("'B'", "'C'"))
+    }
+  })
+  const screen = panel.querySelector('[data-role="phoneScreen"]')
+  if (screen) screen.dataset.slot = 'C'
+  workspace.insertBefore(panel, workspace.querySelector('.dual-log-resize'))
+}
+
+createThirdDevicePanel()
 
 function bindSlotProperty(name, property = name) {
   Object.defineProperty(window, name, {
@@ -104,6 +124,36 @@ deviceSlots.forEach(device => {
   device.panel = document.querySelector(`.device-panel[data-slot="${device.slot}"]`)
   device.panel?.addEventListener('pointerdown', () => activateSlot(device.slot), true)
 })
+
+function updateDevicePanels() {
+  const connected = deviceSlots.filter(device => device.serial)
+  const visible = connected.length ? connected : [deviceSlots[0]]
+  deviceSlots.forEach(device => {
+    if (device.panel) device.panel.style.display = visible.includes(device) ? 'flex' : 'none'
+    const disconnectButton = slotElement(device, 'slotDisconnectButton')
+    if (disconnectButton) disconnectButton.hidden = !device.serial
+  })
+  const workspace = document.querySelector('.dual-workspace')
+  if (workspace) workspace.style.setProperty('--device-count', visible.length)
+  const addButton = document.getElementById('deviceAddButton')
+  if (addButton) {
+    const full = deviceSlots.every(device => device.serial)
+    addButton.disabled = full
+    addButton.title = full ? '최대 3대까지 연결할 수 있습니다' : '연결할 Android 기기를 추가합니다'
+  }
+}
+
+function addDevicePanel() {
+  const next = deviceSlots.find(device => !device.serial)
+  if (!next) {
+    showToast('동시에 최대 3대까지 연결할 수 있습니다', true)
+    return
+  }
+  activateSlot(next.slot)
+  openConnectModal()
+}
+
+updateDevicePanels()
 
 function activateSlot(slot) {
   const target = deviceSlots.find(device => device.slot === slot)
@@ -235,8 +285,9 @@ async function refreshDevices() {
 
 async function selectDevice(d) {
   const device = activeDevice
-  if (deviceSlots.some(other => other !== device && other.serial === d.serial)) {
-    showToast('같은 기기를 두 화면에 동시에 연결할 수 없습니다', true)
+  const existing = deviceSlots.find(other => other !== device && other.serial === d.serial)
+  if (existing) {
+    showToast(`이미 기기 ${existing.slot} 화면에서 사용 중입니다`, true)
     return
   }
   if (device.serial && device.serial !== d.serial) await withActiveDevice(device, disconnectDevice)
@@ -248,6 +299,7 @@ async function selectDevice(d) {
 
 function setConnected(name) {
   const device = activeDevice
+  updateDevicePanels()
   const modelEl = slotElement(device, 'slotModel')
   const statusEl = slotElement(device, 'slotStatus')
   if (modelEl) modelEl.textContent = name
@@ -346,7 +398,7 @@ async function connectWifi() {
   if (!ip) { showToast('IP 주소를 입력하세요', true); return }
   const serial = `${ip}:${port}`
   if (deviceSlots.some(other => other !== device && other.serial === serial)) {
-    showToast('같은 기기를 두 화면에 동시에 연결할 수 없습니다', true)
+    showToast('같은 기기를 여러 화면에 동시에 연결할 수 없습니다', true)
     return
   }
   if (device.serial && device.serial !== serial) await withActiveDevice(device, disconnectDevice)
@@ -1058,7 +1110,7 @@ function renderLogcat() {
   // 버퍼를 크게 키우면 줄 단위 증분 append 로 올릴 것.
   logcatShown = shown
   body.innerHTML = shown.map((l, i) => {
-    const lv = logLevelOf(l.replace(/^\[기기 [AB]\] /, ''))
+    const lv = logLevelOf(l.replace(/^\[기기 [A-C]\] /, ''))
     // 긴 줄만 눌러서 펼칠 수 있게 표시한다 — 짧은 줄까지 열리면 성가시다
     const long = l.length > LOGCAT_DETAIL_MIN ? ' long' : ''
     return `<span class="lv-${lv || 'none'}${long}" data-i="${i}">${escapeHtml(l)}</span>`
@@ -1206,7 +1258,7 @@ function showDualLogTab(tab) {
 }
 
 function setDualLogDevice(slot) {
-  dualLogDevice = ['all', 'A', 'B'].includes(slot) ? slot : 'all'
+  dualLogDevice = ['all', ...deviceSlots.map(device => device.slot)].includes(slot) ? slot : 'all'
   renderLogcat()
 }
 
@@ -1805,6 +1857,10 @@ async function disconnectDevice() {
     updateConnToggle()
     showToast((name || '기기') + ' 연결 해제됨')
   })
+  if (deviceSlots.some(other => other !== device && other.serial)) {
+    activateSlot(deviceSlots.find(other => other !== device && other.serial).slot)
+  }
+  updateDevicePanels()
 }
 
 // 버튼 한 개가 여러 역할을 하므로 탭·연결 상태가 바뀔 때마다 모양을 맞춰준다.
