@@ -69,9 +69,9 @@ function resolveBin(name) {
 let adbPath = resolveBin(adbBin)
 
 let mainWindow = null
-let mirror = null   // MirrorBridge 인스턴스
-let recordingProcess = null
-let recordingStopping = false
+const mirrors = new Map()   // 기기 serial 별 MirrorBridge
+const recordingProcesses = new Map()
+const recordingStopping = new Set()
 let clipboardPollTimer = null
 let lastDesktopClipboard = null
 let proxyServer = null
@@ -86,8 +86,8 @@ const MIRROR_LOG = path.join(app.getPath('userData'), 'mirror.log')
 try { fs.writeFileSync(MIRROR_LOG, '') } catch { }
 
 // 미러링 로그 채널. 화면 패널과 로그 파일 양쪽으로 보낸다.
-function logMirror(msg) {
-  mainWindow?.webContents.send('mirror:log', msg)
+function logMirror(msg, serial = null) {
+  mainWindow?.webContents.send('mirror:log', msg, serial)
   try { fs.appendFileSync(MIRROR_LOG, `${new Date().toISOString()} ${msg}\n`) } catch { }
 }
 
@@ -182,16 +182,17 @@ function setupAutoUpdater() {
   })
 }
 
-function getMirror() {
-  if (!mirror) {
-    mirror = new MirrorBridge({
+function getMirror(serial) {
+  if (!serial) throw new Error('미러링할 기기를 지정해야 합니다')
+  if (!mirrors.has(serial)) {
+    mirrors.set(serial, new MirrorBridge({
       adbPath,
       binDir,
-      onLog: logMirror,
+      onLog: msg => logMirror(msg, serial),
       onClipboard: syncDeviceClipboard,
-    })
+    }))
   }
-  return mirror
+  return mirrors.get(serial)
 }
 
 function stopDesktopClipboardSync() {
@@ -211,7 +212,7 @@ function startDesktopClipboardSync() {
       logMirror('[클립보드] 1MB를 넘는 텍스트는 동기화하지 않습니다')
       return
     }
-    mirror?.setClipboard(text)
+    mirrors.forEach(bridge => bridge.setClipboard(text))
   }, 500)
 }
 
@@ -290,7 +291,8 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, '..', 'public', 'index.html'))
   if (isDev) mainWindow.webContents.openDevTools()
   mainWindow.on('closed', () => {
-    mirror?.destroy()
+    mirrors.forEach(bridge => bridge.destroy())
+    mirrors.clear()
     stopLogcat()   // 창이 닫혀도 adb logcat 이 남아 돌지 않게
     stopDesktopClipboardSync()
     mainWindow = null
@@ -361,28 +363,30 @@ ipcMain.handle('adb:disconnect', async (_, target) => {
 ipcMain.handle('mirror:start', async (_, { serial, maxSize, videoBitrate, fps }) => {
   try {
     adbPath = resolveBin(adbBin) // 재탐색 (setup 이후 변경 대응)
-    await getMirror().start({ serial, maxSize, videoBitrate, fps })
-    startDesktopClipboardSync()
+    await getMirror(serial).start({ serial, maxSize, videoBitrate, fps })
+    if (!clipboardPollTimer) startDesktopClipboardSync()
     return { ok: true }
   } catch (e) {
     return { ok: false, message: e.message }
   }
 })
 
-ipcMain.handle('mirror:stop', async () => {
-  stopDesktopClipboardSync()
-  await mirror?.stop()
+ipcMain.handle('mirror:stop', async (_, serial) => {
+  const bridge = mirrors.get(serial)
+  await bridge?.stop()
+  if (bridge) mirrors.delete(serial)
+  if (![...mirrors.values()].some(item => item.running)) stopDesktopClipboardSync()
   return { ok: true }
 })
 
-ipcMain.handle('mirror:init', async () => {
-  return await getMirror().startWss()
+ipcMain.handle('mirror:init', async (_, serial) => {
+  return await getMirror(serial).startWss()
 })
 
 // ── 화면 캡처 ──────────────────────────────────────────────────
 // 미리보기 → 저장/취소 흐름이라 캡처 시점에는 파일을 만들지 않는다.
 // 버퍼를 들고 있다가 사용자가 '저장'을 누를 때만 디스크에 쓴다.
-let lastCapture = null
+const lastCaptures = new Map()
 
 // exec-out 은 PNG 를 stdout 으로 바로 준다 — sdcard 경유·pull·rm 이 전부 불필요하다
 function screencap(serial) {
@@ -407,12 +411,13 @@ function screencap(serial) {
 ipcMain.handle('adb:screenshot', async (_, serial) => {
   const r = await screencap(serial)
   if (!r.ok) return r
-  lastCapture = r.buf
+  lastCaptures.set(serial, r.buf)
   return { ok: true, dataUrl: 'data:image/png;base64,' + r.buf.toString('base64') }
 })
 
-ipcMain.handle('capture:save', async () => {
-  if (!lastCapture) return { ok: false, message: '저장할 캡처가 없습니다' }
+ipcMain.handle('capture:save', async (_, serial) => {
+  const capture = lastCaptures.get(serial)
+  if (!capture) return { ok: false, message: '저장할 캡처가 없습니다' }
   const { filePath } = await dialog.showSaveDialog(mainWindow, {
     title: '캡처 저장',
     defaultPath: `screenshot_${Date.now()}.png`,
@@ -420,7 +425,7 @@ ipcMain.handle('capture:save', async () => {
   })
   if (!filePath) return { ok: false, canceled: true }
   try {
-    fs.writeFileSync(filePath, lastCapture)
+    fs.writeFileSync(filePath, capture)
     return { ok: true, path: filePath }
   } catch (e) {
     return { ok: false, message: String(e) }
@@ -429,15 +434,16 @@ ipcMain.handle('capture:save', async () => {
 
 // 이미지 클립보드는 렌더러의 ClipboardItem 보다 Electron 네이티브 쪽이 확실하다
 // (버퍼가 이미 메인에 있어서 왕복도 없다)
-ipcMain.handle('capture:copy', () => {
-  if (!lastCapture) return { ok: false, message: '복사할 캡처가 없습니다' }
-  const img = nativeImage.createFromBuffer(lastCapture)
+ipcMain.handle('capture:copy', (_, serial) => {
+  const capture = lastCaptures.get(serial)
+  if (!capture) return { ok: false, message: '복사할 캡처가 없습니다' }
+  const img = nativeImage.createFromBuffer(capture)
   if (img.isEmpty()) return { ok: false, message: '이미지를 읽지 못했습니다' }
   clipboard.writeImage(img)
   return { ok: true }
 })
 
-ipcMain.handle('capture:discard', () => { lastCapture = null; return { ok: true } })
+ipcMain.handle('capture:discard', (_, serial) => { lastCaptures.delete(serial); return { ok: true } })
 
 // ── Jira ───────────────────────────────────────────────────────
 // API 토큰은 OS 키체인(Windows 는 DPAPI)으로 암호화해 userData 에 둔다. 평문으로 굴리면
@@ -577,7 +583,7 @@ ipcMain.handle('window:set-min-size', (_, width) => {
 // 녹화 시작. ADB 프로세스가 즉시 종료되면 시작 실패로 보고, 실제로 살아 있는지 확인한 뒤
 // 성공을 반환한다. screenrecord 는 동작 중 별도 출력을 내지 않으므로 잠시 생존 여부를 본다.
 ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
-  if (recordingProcess) return { ok: false, message: '이미 녹화 중입니다' }
+  if (recordingProcesses.has(serial)) return { ok: false, message: '이미 녹화 중입니다' }
   if (!adbPath) return { ok: false, message: 'adb 를 찾을 수 없습니다' }
 
   const args = ['-s', serial, 'shell', 'screenrecord',
@@ -595,8 +601,8 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
       resolve({ ok: false, message: `adb 녹화 실행 실패: ${error.message}` })
       return
     }
-    recordingProcess = proc
-    recordingStopping = false
+    recordingProcesses.set(serial, proc)
+    recordingStopping.delete(serial)
     const finishStart = result => {
       if (!startupTimer) return
       clearTimeout(startupTimer)
@@ -607,23 +613,23 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
     proc.stdout.on('data', collect)
     proc.stderr.on('data', collect)
     proc.on('error', error => {
-      if (recordingProcess === proc) recordingProcess = null
+      if (recordingProcesses.get(serial) === proc) recordingProcesses.delete(serial)
       finishStart({ ok: false, message: `adb 녹화 실행 실패: ${error.message}` })
-      if (started && !recordingStopping) {
-        mainWindow?.webContents.send('adb:record-ended', { message: error.message })
+      if (started && !recordingStopping.has(serial)) {
+        mainWindow?.webContents.send('adb:record-ended', { message: error.message }, serial)
       }
     })
     proc.on('close', code => {
-      if (recordingProcess === proc) recordingProcess = null
+      if (recordingProcesses.get(serial) === proc) recordingProcesses.delete(serial)
       if (!started) {
         finishStart({
           ok: false,
           message: output.trim() || `녹화를 시작하지 못했습니다 (종료 코드 ${code})`,
         })
-      } else if (!recordingStopping) {
+      } else if (!recordingStopping.has(serial)) {
         mainWindow?.webContents.send('adb:record-ended', {
           message: output.trim() || `기기 녹화가 종료되었습니다 (종료 코드 ${code})`,
-        })
+        }, serial)
       }
     })
     startupTimer = setTimeout(() => {
@@ -637,8 +643,8 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
 // 마치고 스스로 종료할 때까지 대기한다. 여기서 로컬 adb 를 먼저 kill 하면 shell 세션이
 // 끊기며 그 마무리가 중단되어 moov 없는 미완결 mp4(재생 불가)가 남는다.
 // 종료 제한을 넘기면 ADB 를 끊고 오류를 반환해 저장 파일이 불완전할 수 있음을 알린다.
-function waitRecordingExit(timeoutMs = 15000) {
-  const proc = recordingProcess
+function waitRecordingExit(serial, timeoutMs = 15000) {
+  const proc = recordingProcesses.get(serial)
   if (!proc) return Promise.resolve(false)
   return new Promise(resolve => {
     const timer = setTimeout(() => { proc.kill(); resolve(true) }, timeoutMs)
@@ -649,11 +655,11 @@ function waitRecordingExit(timeoutMs = 15000) {
 // 녹화 중지 + 저장
 ipcMain.handle('adb:record-stop', async (_, serial) => {
   try {
-    recordingStopping = true
+    recordingStopping.add(serial)
     // 기기에서 실행 중인 screenrecord 프로세스에 SIGINT 전송 (정상 종료 → 파일 무결성 보장)
     await runAdb(['-s', serial, 'shell', 'pkill', '-2', 'screenrecord']).catch(() => { })
-    const timedOut = await waitRecordingExit()
-    recordingProcess = null
+    const timedOut = await waitRecordingExit(serial)
+    recordingProcesses.delete(serial)
     if (timedOut) throw new Error('녹화 종료 응답이 늦어 저장 파일이 불완전할 수 있습니다')
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       title: '녹화 파일 저장',
@@ -665,7 +671,7 @@ ipcMain.handle('adb:record-stop', async (_, serial) => {
     await runAdb(['-s', serial, 'shell', 'rm', '/sdcard/_db_rec.mp4'])
     return { ok: true, path: filePath }
   } catch (e) { return { ok: false, message: String(e) } }
-  finally { recordingStopping = false }
+  finally { recordingStopping.delete(serial) }
 })
 
 // APK 선택 다이얼로그
@@ -873,30 +879,41 @@ ipcMain.handle('device:info', async (_, serial) => {
 })
 
 // ── LogCat 스트리밍 ────────────────────────────────────────────
-let logcatProcess = null
+const logcatProcesses = new Map()
 
-function stopLogcat() {
-  if (logcatProcess) { logcatProcess.kill(); logcatProcess = null }
+function stopLogcat(serial) {
+  if (serial) {
+    const proc = logcatProcesses.get(serial)
+    if (proc) { proc.kill(); logcatProcesses.delete(serial) }
+    return
+  }
+  logcatProcesses.forEach(proc => proc.kill())
+  logcatProcesses.clear()
 }
 
 ipcMain.handle('logcat:start', async (_, serial) => {
-  stopLogcat()
   try {
+    if (!serial) return { ok: false, message: 'LogCat 기기를 지정해야 합니다' }
+    stopLogcat(serial)
     // -T 200: 버퍼 전체(수만 줄)가 아니라 최근 200줄부터 흘린다
     const proc = spawn(adbPath, ['-s', serial, 'logcat', '-v', 'threadtime', '-T', '200'])
-    logcatProcess = proc
-    const send = d => mainWindow?.webContents.send('logcat:data', d.toString())
+    logcatProcesses.set(serial, proc)
+    const send = d => mainWindow?.webContents.send('logcat:data', d.toString(), serial)
     proc.stdout.on('data', send)
     proc.stderr.on('data', send)
     // 핸들러가 없으면 spawn 실패 시 처리되지 않은 'error' 로 메인 프로세스가 죽는다
     proc.on('error', e => {
-      mainWindow?.webContents.send('logcat:data', `[logcat 실행 실패] ${e.message}\n`)
-      if (logcatProcess === proc) logcatProcess = null
-      mainWindow?.webContents.send('logcat:stopped')
+      mainWindow?.webContents.send('logcat:data', `[logcat 실행 실패] ${e.message}\n`, serial)
+      if (logcatProcesses.get(serial) === proc) {
+        logcatProcesses.delete(serial)
+        mainWindow?.webContents.send('logcat:stopped', serial)
+      }
     })
     proc.on('close', () => {
-      if (logcatProcess === proc) logcatProcess = null
-      mainWindow?.webContents.send('logcat:stopped')
+      if (logcatProcesses.get(serial) === proc) {
+        logcatProcesses.delete(serial)
+        mainWindow?.webContents.send('logcat:stopped', serial)
+      }
     })
     return { ok: true }
   } catch (e) {
@@ -904,8 +921,8 @@ ipcMain.handle('logcat:start', async (_, serial) => {
   }
 })
 
-ipcMain.handle('logcat:stop', async () => {
-  stopLogcat()
+ipcMain.handle('logcat:stop', async (_, serial) => {
+  stopLogcat(serial)
   return { ok: true }
 })
 

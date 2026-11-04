@@ -1,17 +1,73 @@
 // ── 전역 상태 ──────────────────────────────────────────────────
-const state = {
-  viewRot: 0,           // 보기 회전 — 기기가 아니라 우리 렌더링만 90°씩 돌린다 (0/1/2/3)
-  serial: null,
-  model: null,
-  mirroring: false,
-  recording: false,
-  recordBusy: false,
-  timerInterval: null,
-  activityInterval: null,
-  currentActivityName: null,
-  seconds: 0,
-  maxSize: 1280,
+function createDeviceState(slot) {
+  return {
+    slot,
+    panel: null,
+    serial: null,
+    model: null,
+    viewRot: 0,
+    mirroring: false,
+    recording: false,
+    recordBusy: false,
+    timerInterval: null,
+    activityInterval: null,
+    currentActivityName: null,
+    currentPkg: null,
+    currentPid: null,
+    logcatPidFilter: null,
+    deviceInfo: null,
+    seconds: 0,
+    maxSize: 1280,
+    videoWidth: 0,
+    videoHeight: 0,
+    aspectRatio: 9 / 19.5,
+    mirrorWs: null,
+    videoDecoder: null,
+    mirrorSession: 0,
+    keyboardMode: 'clipboard',
+    configNalBuffer: null,
+    logcatInputPending: '',
+    logcatRunning: false,
+    logcatLines: [],
+    logcatShown: [],
+    logcatDirty: false,
+    logcatLast: null,
+    logcatMinLevel: 0,
+    logcatPreset: '',
+    lastIssueLines: [],
+    logcatFont: parseInt(localStorage.getItem('db_logcat_font')) || 11,
+    logcatEntryLast: null,
+  }
 }
+
+const deviceSlots = [createDeviceState('A'), createDeviceState('B')]
+let activeDevice = deviceSlots[0]
+let mirrorLogListenerRegistered = false
+let dualLogTab = 'mirror'
+let dualLogDevice = 'all'
+const allLogEntries = []
+
+function bindSlotProperty(name, property = name) {
+  Object.defineProperty(window, name, {
+    configurable: true,
+    get: () => activeDevice[property],
+    set: value => { activeDevice[property] = value },
+  })
+}
+
+for (const name of [
+  'mirrorWs', 'videoDecoder', 'mirrorSession', 'keyboardMode', 'configNalBuffer',
+  'currentPkg', 'currentPid', 'logcatPidFilter', 'deviceInfo', 'lastIssueLines',
+  'logcatLines', 'logcatShown', 'logcatDirty', 'logcatLast', 'logcatMinLevel',
+  'logcatPreset', 'logcatRunning',
+  'logcatFont',
+]) bindSlotProperty(name)
+bindSlotProperty('logcatPending', 'logcatInputPending')
+
+const state = new Proxy({}, {
+  get: (_, key) => activeDevice[key],
+  set: (_, key, value) => { activeDevice[key] = value; return true },
+})
 
 // ── 보기 회전 ──────────────────────────────────────────────────
 // 기기를 실제로 돌리지 않고 우리가 그리는 방향만 90°씩 바꾼다.
@@ -35,7 +91,46 @@ function unrotate(rot, cx, cy, dw, dh) {
 }
 
 // ── 유틸 ───────────────────────────────────────────────────────
-function $(id) { return document.getElementById(id) }
+function $(id) {
+  const scoped = activeDevice?.panel?.querySelector(`[data-role="${id}"]`)
+  return scoped || document.getElementById(id)
+}
+
+function slotElement(device, role) {
+  return device?.panel?.querySelector(`[data-role="${role}"]`) || null
+}
+
+deviceSlots.forEach(device => {
+  device.panel = document.querySelector(`.device-panel[data-slot="${device.slot}"]`)
+  device.panel?.addEventListener('pointerdown', () => activateSlot(device.slot), true)
+})
+
+function activateSlot(slot) {
+  const target = deviceSlots.find(device => device.slot === slot)
+  if (!target) return
+  activeDevice = target
+  document.querySelectorAll('.device-panel').forEach(panel =>
+    panel.classList.toggle('active', panel.dataset.slot === slot))
+  const toggle = document.getElementById('logcatToggle')
+  if (toggle) {
+    toggle.innerHTML = target.logcatRunning
+      ? '<i class="ti ti-player-stop"></i>'
+      : '<i class="ti ti-player-play"></i>'
+    toggle.title = target.logcatRunning ? '로그 중지' : '로그 시작'
+  }
+  const level = document.getElementById('logcatLevel')
+  if (level) level.value = String(target.logcatMinLevel)
+  const preset = document.getElementById('logcatPreset')
+  if (preset) preset.value = target.logcatPreset
+  updateLogFilterBtn()
+  renderLogcat()
+}
+
+function withActiveDevice(device, callback) {
+  const previous = activeDevice
+  activeDevice = device
+  try { return callback() } finally { activeDevice = previous }
+}
 
 // 요소가 없어도(주석처리·레이아웃 변경) 죽지 않는 설정자. renderer.js 는 클래식
 // 스크립트 한 덩어리라 한 곳에서 예외가 나면 그 뒤 핸들러가 통째로 죽는다.
@@ -50,7 +145,7 @@ function setText(id, text, color) {
 function mirrorLog(msg) {
   const el = $('scrcpyLog')
   if (!el) return
-  el.textContent += msg + '\n'
+  el.textContent += `[기기 ${activeDevice.slot}] ${msg}\n`
   el.scrollTop = el.scrollHeight
 }
 
@@ -62,6 +157,15 @@ function setClass(id, cls) {
 // sticky=true 면 다음 showToast 가 덮어쓸 때까지 남는다. 설치처럼 수십 초 걸리는
 // 작업에서 "먹통인가?" 싶은 공백을 없애려는 용도다.
 function showToast(msg, isError = false, sticky = false) {
+  const dual = document.getElementById('dualToast')
+  if (dual) {
+    dual.textContent = msg
+    dual.classList.toggle('error', isError)
+    dual.classList.add('show')
+    clearTimeout(dual._timeout)
+    if (!sticky) dual._timeout = setTimeout(() => dual.classList.remove('show'), msg.length > 60 ? 8000 : 2400)
+    return
+  }
   $('toastMsg').textContent = msg
   const icon = $('toastIcon')
   icon.className = sticky ? 'ti ti-package toast-busy'
@@ -129,64 +233,77 @@ async function refreshDevices() {
   })
 }
 
-function selectDevice(d) {
-  state.serial = d.serial
-  state.model = d.model
+async function selectDevice(d) {
+  const device = activeDevice
+  if (deviceSlots.some(other => other !== device && other.serial === d.serial)) {
+    showToast('같은 기기를 두 화면에 동시에 연결할 수 없습니다', true)
+    return
+  }
+  if (device.serial && device.serial !== d.serial) await withActiveDevice(device, disconnectDevice)
+  device.serial = d.serial
+  device.model = d.model
   closeModal()
-  setConnected(d.model)
+  withActiveDevice(device, () => setConnected(d.model))
 }
 
 function setConnected(name) {
-  setRecordingStatus('idle', 'REC 버튼을 눌러 화면 녹화를 시작하세요')
+  const device = activeDevice
+  const modelEl = slotElement(device, 'slotModel')
+  const statusEl = slotElement(device, 'slotStatus')
+  if (modelEl) modelEl.textContent = name
+  if (statusEl) { statusEl.textContent = '● 연결됨'; statusEl.classList.add('connected') }
+  const recordStatus = slotElement(device, 'recordStatus')
+  if (recordStatus) {
+    recordStatus.dataset.state = 'idle'
+    recordStatus.textContent = '녹화 대기 중'
+    recordStatus.title = ''
+  }
   setClass('connBadge', 'conn-badge connected')
   setText('connText', name)
   setText('statusText', '연결됨', 'var(--accent2)')
   setText('deviceText', name)
   setText('bitrateText', ($('defBitrate')?.value || '8') + ' Mbps')
-  setClass('phoneIcon', 'ti ti-device-mobile')
-  setText('phoneMsg', '미러링 시작 버튼을 눌러주세요')
+  const icon = slotElement(device, 'phoneIcon')
+  const message = slotElement(device, 'phoneMsg')
+  if (icon) icon.style.display = 'none'
+  if (message) message.style.display = 'none'
   showToast(name + ' 연결됨')
   updateMirrorToggle()
   refreshDeviceInfo()
   updateConnToggle()
 
   syncLogControls()
-  startActivityPolling()
+  startActivityPolling(device)
   // 연결되면 미러링과 LogCat 을 바로 시작한다 (시작 버튼을 없앤 대신)
-  if (!logcatRunning) toggleLogcat()
+  if (!state.logcatRunning) toggleLogcat()
   if (!state.mirroring) startMirror()
 }
 
 // ── 현재 화면(Activity) 조회 ───────────────────────────────────
-function startActivityPolling() {
-  stopActivityPolling()
-  state.activityInterval = setInterval(async () => {
-    if (!state.serial) return
-    const r = await window.db.getCurrentActivity(state.serial)
+function startActivityPolling(device = activeDevice) {
+  stopActivityPolling(device)
+  device.activityInterval = setInterval(async () => {
+    if (!device.serial) return
+    const r = await window.db.getCurrentActivity(device.serial)
     const name = r.ok ? r.activity : '—'
-    state.currentActivityName = r.ok ? r.activity : null
-    if (r.ok && r.activity.includes('/')) refreshAppInfo(r.activity.split('/')[0])
+    device.currentActivityName = r.ok ? r.activity : null
+    if (r.ok && r.activity.includes('/')) refreshAppInfo(r.activity.split('/')[0], device)
+    const activityEl = slotElement(device, 'slotActivity')
+    if (activityEl) activityEl.textContent = name
     // 두 표시를 독립적으로 갱신한다. 예전에는 activityText(연결 정보 카드) 존재 여부에
     // 묶여 있어서, 그 카드를 주석처리하자 Activity 표시가 통째로 멈췄다.
-    setText('activityText', name)
-    setText('headerActivityText', name)
-    const el = $('activityText'); if (el) el.title = name
-    const hd = $('headerActivityText'); if (hd) hd.title = name
+    const header = slotElement(device, 'slotActivity')
+    if (header) header.title = name
   }, 2000)
 }
 
-function stopActivityPolling() {
-  if (state.activityInterval) {
-    clearInterval(state.activityInterval)
-    state.activityInterval = null
+function stopActivityPolling(device = activeDevice) {
+  if (device.activityInterval) {
+    clearInterval(device.activityInterval)
+    device.activityInterval = null
   }
-  const el = $('activityText')
-  if (el) {
-    el.textContent = '—'
-    el.title = '—'
-  }
-  state.currentActivityName = null
-  const headerText = $('headerActivityText')
+  device.currentActivityName = null
+  const headerText = slotElement(device, 'slotActivity')
   if (headerText) headerText.textContent = '—'
 }
 
@@ -211,17 +328,24 @@ function closeActivityModal() {
 
 // ── Wi-Fi 연결 ─────────────────────────────────────────────────
 async function connectWifi() {
+  const device = activeDevice
   const ip = $('ipInput').value.trim()
   const port = $('portInput').value || 5555
   if (!ip) { showToast('IP 주소를 입력하세요', true); return }
+  const serial = `${ip}:${port}`
+  if (deviceSlots.some(other => other !== device && other.serial === serial)) {
+    showToast('같은 기기를 두 화면에 동시에 연결할 수 없습니다', true)
+    return
+  }
+  if (device.serial && device.serial !== serial) await withActiveDevice(device, disconnectDevice)
   setClass('connBadge', 'conn-badge searching')
   setText('connText', '연결 중...')
   const r = await window.db.connect(ip, parseInt(port))
   if (r.ok) {
-    state.serial = `${ip}:${port}`
-    state.model = ip
+    device.serial = serial
+    device.model = ip
     closeModal()
-    setConnected(ip)
+    withActiveDevice(device, () => setConnected(ip))
   } else {
     setClass('connBadge', 'conn-badge disconnected')
     setText('connText', '연결되지 않음')
@@ -239,25 +363,19 @@ function wifiQuickConnect() {
 
 // ── 미러링 ─────────────────────────────────────────────────────
 // ── 미러링 (WebCodecs + WebSocket) ────────────────────────────
-let mirrorWs = null   // WebSocket → bridge
-let videoDecoder = null  // WebCodecs VideoDecoder
-let mirrorSession = 0
-// 'uhid'(물리 키보드 에뮬레이션) | 'clipboard'(구식 폴백). bridge 가 판정해 알려준다.
-let keyboardMode = 'clipboard'
-
 function getMirrorCanvas() {
-  let c = document.getElementById('mirrorCanvas')
+  const screen = slotElement(activeDevice, 'phoneScreen')
+  if (!screen) return null
+  let c = screen.querySelector('canvas')
   if (!c) {
-    // 캔버스를 phone-screen 안에 동적으로 생성
-    const screen = document.getElementById('phoneScreen')
     screen.innerHTML = ''
     c = document.createElement('canvas')
-    c.id = 'mirrorCanvas'
+    c.dataset.role = 'mirrorCanvas'
     c.style.cssText = 'width:100%;height:100%;object-fit:contain;border-radius:18px;background:#000;cursor:pointer'
 
     // 숨겨진 키보드 입력용 textarea 생성
     const input = document.createElement('textarea')
-    input.id = 'mirrorInput'
+    input.dataset.role = 'mirrorInput'
     input.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:0;height:0;opacity:0'
     screen.appendChild(input)
 
@@ -270,6 +388,7 @@ function getMirrorCanvas() {
 }
 
 function setupCanvasEvents(canvas, input) {
+  const device = activeDevice
   let isDown = false
 
   // 캔버스를 포커스 가능하게 만든다. 편집 요소가 아니라서 Windows IME 가 붙지 않고,
@@ -445,8 +564,8 @@ function setupCanvasEvents(canvas, input) {
     pressed.clear()
     sendHid()
   }
-  input.addEventListener('blur', releaseAll)
-  window.addEventListener('blur', releaseAll)
+  input.addEventListener('blur', () => withActiveDevice(device, releaseAll))
+  window.addEventListener('blur', () => withActiveDevice(device, releaseAll))
 
   let sentText = ''
   let inputTimeout = null
@@ -475,12 +594,12 @@ function setupCanvasEvents(canvas, input) {
     sentText = currText
   }
 
-  input.addEventListener('input', e => {
+  input.addEventListener('input', e => withActiveDevice(device, () => {
     if (keyboardMode === 'uhid') { input.value = ''; return }
     clearTimeout(inputTimeout)
     // 60ms 디바운스: 빠른 한글 자모 입력 시 클립보드 레이스 컨디션 방지
-    inputTimeout = setTimeout(syncText, 60)
-  })
+    inputTimeout = setTimeout(() => withActiveDevice(device, syncText), 60)
+  }))
 
   const onKeyDown = e => {
     if (keyboardMode === 'uhid') {
@@ -496,7 +615,7 @@ function setupCanvasEvents(canvas, input) {
         pressed.add(code)
         sendHid()
         // 눌림/뗌을 별도 리포트로 보내야 단말이 두 상태를 구분한다
-        setTimeout(() => { pressed.delete(code); sendHid() }, 30)
+        setTimeout(() => withActiveDevice(device, () => { pressed.delete(code); sendHid() }), 30)
         return
       }
 
@@ -568,63 +687,65 @@ function setupCanvasEvents(canvas, input) {
   // UHID 모드는 캔버스에, 클립보드 모드는 textarea 에 포커스가 간다. 어느 쪽이 잡히든
   // 같은 핸들러가 돌도록 둘 다에 건다.
   for (const el of [input, canvas]) {
-    el.addEventListener('keydown', onKeyDown)
-    el.addEventListener('keyup', onKeyUp)
+    el.addEventListener('keydown', e => withActiveDevice(device, () => onKeyDown(e)))
+    el.addEventListener('keyup', e => withActiveDevice(device, () => onKeyUp(e)))
   }
 }
 
 function resetPhoneScreen() {
   updateMirrorToggle()   // 미러링이 끝나는 모든 경로가 이 함수를 지난다
-  const screen = document.getElementById('phoneScreen')
+  const screen = slotElement(activeDevice, 'phoneScreen')
   if (!screen) return
-  screen.innerHTML = `
-    <div class="phone-notch"></div>
-    <i class="ti ti-device-mobile-off" id="phoneIcon"></i>
-    <p id="phoneMsg">${state.serial ? '미러링 시작 버튼을 눌러주세요' : '기기를 연결해 주세요'}</p>
-    <div class="phone-home"></div>`
+  screen.innerHTML = `<i class="ti ti-device-mobile-off" data-role="phoneIcon"></i>
+    <p data-role="phoneMsg">${state.serial ? '미러링 시작 버튼을 눌러주세요' : '기기를 연결해 주세요'}</p>`
 }
 
 // ── 로그 유틸 ──────────────────────────────────────────────────
 // ── 현재 앱 작업대 ─────────────────────────────────────────────
-let currentPkg = null
-let currentPid = null
-let logcatPidFilter = null   // 설정되면 해당 PID 줄만 보여준다
 // 기본값은 '현재 앱만' 이다. PID 를 알기 전에는 걸 수 없어서, 앱 정보가 들어오는 시점에 켠다.
 let logAppOnly = localStorage.getItem('db_log_app_only') !== '0'
 
 // Activity 는 2초마다 오지만 패키지가 바뀔 때만 dumpsys 를 친다 (매번 치면 기기가 는다)
-async function refreshAppInfo(pkg) {
-  if (!pkg || pkg === currentPkg) return
-  currentPkg = pkg
-  currentPid = null
-  setText('appPkg', pkg)
-  setText('appVer', '조회 중...')
+async function refreshAppInfo(pkg, device = activeDevice) {
+  if (!pkg || pkg === device.currentPkg) return
+  device.currentPkg = pkg
+  device.currentPid = null
+  const packageEl = slotElement(device, 'appPkg')
+  const versionEl = slotElement(device, 'appVer')
+  if (packageEl) packageEl.textContent = pkg
+  if (versionEl) versionEl.textContent = '조회 중...'
 
-  const r = await window.db.appInfo({ serial: state.serial, pkg })
-  if (pkg !== currentPkg) return          // 그 사이 앱이 또 바뀌었다
-  if (!r.ok) { setText('appVer', r.message || '정보를 가져오지 못했습니다'); return }
+  const r = await window.db.appInfo({ serial: device.serial, pkg })
+  if (pkg !== device.currentPkg) return
+  if (!r.ok) { if (versionEl) versionEl.textContent = r.message || '정보를 가져오지 못했습니다'; return }
 
-  currentPid = r.pid
-  setText('appVer', [
+  device.currentPid = r.pid
+  if (versionEl) versionEl.textContent = [
     r.versionName ? 'v' + r.versionName : null,
     r.versionCode ? '(' + r.versionCode + ')' : null,
     r.pid ? 'PID ' + r.pid : null,
-  ].filter(Boolean).join('  '))
+  ].filter(Boolean).join('  ')
 
   // 필터가 켜져 있으면 새 PID 를 따라간다. 기본값이 '현재 앱만' 이라 처음 PID 를 알게 된
   // 순간에도 여기서 걸린다.
-  if (logAppOnly || logcatPidFilter) { logcatPidFilter = r.pid; renderLogcat() }
-  updateLogFilterBtn()
+  if (device === activeDevice && (logAppOnly || device.logcatPidFilter)) {
+    device.logcatPidFilter = r.pid
+    renderLogcat()
+  }
+  if (device === activeDevice) updateLogFilterBtn()
 }
 
 async function appAction(action) {
   if (!requireDevice()) return
-  if (!currentPkg) { showToast('현재 앱을 알 수 없습니다', true); return }
+  if (!state.currentPkg) { showToast('현재 앱을 알 수 없습니다', true); return }
+  const device = activeDevice
+  const serial = device.serial
+  const pkg = device.currentPkg
   const label = { 'force-stop': '강제종료', 'clear': '데이터 삭제 후 재실행', 'restart': '재실행', 'settings': '앱 정보' }[action]
-  const r = await window.db.appAction({ serial: state.serial, pkg: currentPkg, action })
+  const r = await window.db.appAction({ serial, pkg, action })
   if (r.ok) {
-    showToast(`${label} 완료 — ${currentPkg}`)
-    if (action === 'clear' || action === 'force-stop') currentPid = null
+    showToast(`${label} 완료 — ${pkg}`)
+    if (action === 'clear' || action === 'force-stop') device.currentPid = null
   } else {
     showToast(`${label} 실패: ${r.message || ''}`, true)
   }
@@ -653,16 +774,17 @@ function toggleAppLogFilter() {
 }
 
 // ── 기기 정보 ──────────────────────────────────────────────────
-let deviceInfo = null
-
 async function refreshDeviceInfo() {
   if (!state.serial) return
-  const r = await window.db.deviceInfo(state.serial)
+  const device = activeDevice
+  const r = await window.db.deviceInfo(device.serial)
   if (!r.ok) return
-  deviceInfo = r
-  setText('devModel', [r.manufacturer, r.model].filter(Boolean).join(' ') || '—')
-  setText('devOs', r.release ? `${r.release} (SDK ${r.sdk})` : '—')
-  setText('devPhone', r.phone || 'NULL')   // SIM 에 번호가 없는 기기도 흔하다
+  device.deviceInfo = r
+  withActiveDevice(device, () => {
+    setText('devModel', [r.manufacturer, r.model].filter(Boolean).join(' ') || '—')
+    setText('devOs', r.release ? `${r.release} (SDK ${r.sdk})` : '—')
+    setText('devPhone', r.phone || 'NULL')
+  })
 }
 
 function copyDeviceInfo() {
@@ -690,8 +812,6 @@ const ISSUE_PATTERNS = [
   { re: /FATAL EXCEPTION/, label: '크래시' },
   { re: /\bANR in\b/, label: 'ANR' },
 ]
-let lastIssueLines = []
-
 function checkIssue(lines) {
   for (const line of lines) {
     const hit = ISSUE_PATTERNS.find(p => p.re.test(line))
@@ -725,12 +845,7 @@ function clearIssue() {
 // 충분하지만, 로그가 폭주해 버벅이면 증분 append 방식으로 올릴 것.
 const LOGCAT_MAX_LINES = 3000   // 넘으면 앞에서 버린다 — DOM 이 감당하지 못한다
 const LOGCAT_DETAIL_MIN = 200   // 이보다 짧은 줄은 그냥 읽힌다 — 눌러서 펼칠 필요가 없다
-let logcatLines = []
-let logcatShown = []            // 지금 그려진 줄 — 클릭한 줄을 되찾으려고 들고 있는다
 let logDetailText = ''
-let logcatPending = ''          // 청크가 줄 중간에서 끊길 수 있어 꼬리를 물고 간다
-let logcatRunning = false
-let logcatDirty = false
 
 // 긴 메시지는 기기 쪽에서 이미 여러 줄로 쪼개져 들어온다. logd 의 한 줄 페이로드 한계(약 4KB)
 // 때문이기도 하고 앱이 직접 잘라 찍기도 한다 — 실측: OkHttp 응답 본문이 1043자짜리 6조각.
@@ -738,7 +853,6 @@ let logcatDirty = false
 // ponytail: 길이 임계값 휴리스틱이다. 같은 스레드·태그로 500자 넘는 줄을 연달아 찍는 앱이라면
 // 서로 붙어 보일 수 있다. 그런 사례가 나오면 '원본 그대로' 토글을 두면 된다.
 const LOGCAT_JOIN_MIN = 500
-let logcatLast = null   // 마지막 줄의 파싱 결과 — 줄마다 다시 파싱하지 않으려고 들고 있는다
 
 function pushLogcatLine(line) {
   const c = parseLogcatLine(line)
@@ -748,14 +862,26 @@ function pushLogcatLine(line) {
   if (p && c && p.lastLen >= LOGCAT_JOIN_MIN &&
       p.pid === c.pid && p.tid === c.tid && p.level === c.level && p.tag === c.tag) {
     logcatLines[logcatLines.length - 1] += c.message
+    const previousEntry = activeDevice.logcatEntryLast
+    if (previousEntry) previousEntry.line += c.message
     p.lastLen = c.message.length
     return
   }
   logcatLines.push(line)
+  const entry = { slot: activeDevice.slot, serial: activeDevice.serial, line }
+  allLogEntries.push(entry)
+  activeDevice.logcatEntryLast = entry
+  while (allLogEntries.length > LOGCAT_MAX_LINES * deviceSlots.length) allLogEntries.shift()
   logcatLast = c && { pid: c.pid, tid: c.tid, level: c.level, tag: c.tag, lastLen: c.message.length }
 }
 
-function appendLogcat(chunk) {
+function appendLogcat(chunk, serial) {
+  const device = deviceSlots.find(slot => slot.serial === serial)
+  if (!device) return
+  withActiveDevice(device, () => appendLogcatForActive(chunk))
+}
+
+function appendLogcatForActive(chunk) {
   logcatPending += chunk
   const parts = logcatPending.split('\n')
   logcatPending = parts.pop()
@@ -767,15 +893,18 @@ function appendLogcat(chunk) {
   }
   if (logcatLines.length > LOGCAT_MAX_LINES) logcatLines = logcatLines.slice(-LOGCAT_MAX_LINES)
   checkIssue(parts)
-  if (logcatDirty) return
-  logcatDirty = true
-  requestAnimationFrame(() => { logcatDirty = false; renderLogcat() })
+  const device = activeDevice
+  if (device.logcatDirty) return
+  device.logcatDirty = true
+  requestAnimationFrame(() => {
+    device.logcatDirty = false
+    renderLogcat()
+  })
 }
 
 // threadtime 형식: "MM-DD HH:MM:SS.mmm  PID  TID LEVEL Tag: msg"
 const LOGCAT_LEVEL_RE = /^\d{2}-\d{2} [\d:.]+\s+\d+\s+\d+\s+([VDIWEFA])\s/
 const LEVEL_RANK = { V: 0, D: 1, I: 2, W: 3, E: 4, F: 5, A: 5 }
-let logcatMinLevel = 0
 
 function logLevelOf(line) {
   const m = line.match(LOGCAT_LEVEL_RE)
@@ -815,7 +944,6 @@ const LOG_PRESETS = {
     ],
   },
 }
-let logcatPreset = ''
 
 function setLogcatPreset(v) {
   logcatPreset = v || ''
@@ -865,14 +993,19 @@ function visibleLogcatLines() {
   const q = ($('logcatFilter')?.value || '').trim()
   const terms = q ? parseLogQuery(q) : []
   const preset = LOG_PRESETS[logcatPreset]
-  if (!terms.length && !logcatPidFilter && !logcatMinLevel && !preset) return logcatLines
+  const entries = dualLogTab === 'all'
+    ? allLogEntries.filter(entry => dualLogDevice === 'all' || entry.slot === dualLogDevice)
+    : logcatLines.map(line => ({ slot: activeDevice.slot, serial: activeDevice.serial, line }))
 
   // 필드 질의가 없으면 줄을 쪼갤 필요가 없다 — 흔한 경우라 빠른 길을 따로 둔다
   const needsParse = terms.some(t => t.key !== null) || !!logcatMinLevel
 
-  return logcatLines.filter(l => {
+  return entries.filter(entry => {
+    const l = entry.line
+    const sourceDevice = deviceSlots.find(device => device.slot === entry.slot)
+    const pidFilter = dualLogTab === 'all' ? sourceDevice?.logcatPidFilter : logcatPidFilter
     if (preset && !preset.res.some(re => re.test(l))) return false
-    if (logcatPidFilter && l.trim().split(/\s+/)[2] !== logcatPidFilter) return false
+    if (pidFilter && l.trim().split(/\s+/)[2] !== pidFilter) return false
     const parsed = needsParse ? parseLogcatLine(l) : null
     if (logcatMinLevel) {
       // 레벨을 못 읽는 줄("--------- beginning of main" 등)은 레벨을 거를 때 함께 숨긴다
@@ -880,7 +1013,9 @@ function visibleLogcatLines() {
     }
     for (const t of terms) if (!matchesTerm(l, parsed, t)) return false
     return true
-  })
+  }).map(entry => dualLogTab === 'all' && dualLogDevice === 'all'
+    ? `[기기 ${entry.slot}] ${entry.line}`
+    : entry.line)
 }
 
 async function saveLogcat() {
@@ -911,7 +1046,7 @@ function renderLogcat() {
   // 버퍼를 크게 키우면 줄 단위 증분 append 로 올릴 것.
   logcatShown = shown
   body.innerHTML = shown.map((l, i) => {
-    const lv = logLevelOf(l)
+    const lv = logLevelOf(l.replace(/^\[기기 [AB]\] /, ''))
     // 긴 줄만 눌러서 펼칠 수 있게 표시한다 — 짧은 줄까지 열리면 성가시다
     const long = l.length > LOGCAT_DETAIL_MIN ? ' long' : ''
     return `<span class="lv-${lv || 'none'}${long}" data-i="${i}">${escapeHtml(l)}</span>`
@@ -952,8 +1087,6 @@ $('logcatBody')?.addEventListener('scroll', updateLogcatJump)
 // ── 로그 글자 크기 (Ctrl + 휠) ─────────────────────────────────
 // 기본값은 CSS 의 11px. 8~24px 로 묶어두고 다음 실행에도 유지한다.
 const LOGCAT_FONT_KEY = 'db_logcat_font'
-let logcatFont = parseInt(localStorage.getItem(LOGCAT_FONT_KEY)) || 11
-
 function setLogcatFont(px) {
   logcatFont = Math.min(24, Math.max(8, px))
   const body = $('logcatBody')
@@ -1043,16 +1176,74 @@ function setLogcatRunning(on) {
   }
 }
 
+function showDualLogTab(tab) {
+  dualLogTab = tab === 'all' ? 'all' : 'mirror'
+  const mirrorLog = document.getElementById('scrcpyLog')
+  const logcatBody = document.getElementById('logcatBody')
+  const controls = document.getElementById('allLogControls')
+  const mirrorButton = document.getElementById('mirrorLogTab')
+  const allButton = document.getElementById('allLogTab')
+  if (mirrorLog) mirrorLog.style.display = dualLogTab === 'mirror' ? 'block' : 'none'
+  if (logcatBody) logcatBody.style.display = dualLogTab === 'all' ? 'block' : 'none'
+  if (controls) controls.style.display = dualLogTab === 'all' ? 'flex' : 'none'
+  mirrorButton?.classList.toggle('active', dualLogTab === 'mirror')
+  allButton?.classList.toggle('active', dualLogTab === 'all')
+  renderLogcat()
+}
+
+function setDualLogDevice(slot) {
+  dualLogDevice = ['all', 'A', 'B'].includes(slot) ? slot : 'all'
+  renderLogcat()
+}
+
+function setupDualLogResize() {
+  const workspace = document.querySelector('.dual-workspace')
+  const handle = document.getElementById('dualLogResize')
+  if (!workspace || !handle) return
+  const key = 'db_dual_log_height'
+  const saved = parseInt(localStorage.getItem(key), 10)
+  let height = Number.isFinite(saved) ? saved : 220
+  const apply = () => {
+    const max = Math.max(140, window.innerHeight - 260)
+    height = Math.min(max, Math.max(140, height))
+    workspace.style.setProperty('--dual-log-height', `${height}px`)
+  }
+  apply()
+  let startY = 0
+  let startHeight = 0
+  handle.addEventListener('pointerdown', event => {
+    startY = event.clientY
+    startHeight = height
+    handle.setPointerCapture(event.pointerId)
+    event.preventDefault()
+  })
+  handle.addEventListener('pointermove', event => {
+    if (!handle.hasPointerCapture(event.pointerId)) return
+    height = startHeight - (event.clientY - startY)
+    apply()
+  })
+  handle.addEventListener('pointerup', event => {
+    if (!handle.hasPointerCapture(event.pointerId)) return
+    handle.releasePointerCapture(event.pointerId)
+    localStorage.setItem(key, String(height))
+  })
+  window.addEventListener('resize', apply)
+}
+
+setupDualLogResize()
+showDualLogTab('mirror')
+
 async function toggleLogcat() {
+  const device = activeDevice
   if (logcatRunning) {
-    await window.db.stopLogcat()
-    setLogcatRunning(false)
+    await window.db.stopLogcat(device.serial)
+    withActiveDevice(device, () => setLogcatRunning(false))
     return
   }
   if (!requireDevice()) return
-  const r = await window.db.startLogcat(state.serial)
+  const r = await window.db.startLogcat(device.serial)
   if (!r.ok) { showToast('로그 시작 실패: ' + (r.message || ''), true); return }
-  setLogcatRunning(true)
+  withActiveDevice(device, () => setLogcatRunning(true))
 }
 
 const PRESET_OPTIONS = [['', '필터 없음'], ['http', 'HTTP 통신'], ['crash', '예외 · 크래시 · ANR']]
@@ -1069,10 +1260,24 @@ function syncLogControls() {
 }
 
 function clearLogcat() {
-  logcatLines = []
-  logcatPending = ''
-  logcatLast = null
+  const targets = dualLogTab === 'all' && dualLogDevice === 'all'
+    ? deviceSlots
+    : dualLogTab === 'all'
+      ? deviceSlots.filter(device => device.slot === dualLogDevice)
+      : [activeDevice]
+  targets.forEach(clearDeviceLogcat)
   renderLogcat()
+}
+
+function clearDeviceLogcat(device) {
+  const serial = device.serial
+  device.logcatLines = []
+  device.logcatInputPending = ''
+  device.logcatLast = null
+  device.logcatEntryLast = null
+  for (let i = allLogEntries.length - 1; i >= 0; i--) {
+    if (allLogEntries[i].serial === serial) allLogEntries.splice(i, 1)
+  }
 }
 
 function copyLogcat() {
@@ -1084,9 +1289,13 @@ function copyLogcat() {
 }
 
 window.db.onLogcatData(appendLogcat)
-window.db.onLogcatStopped(() => setLogcatRunning(false))
-window.db.onRecordEnded(status => {
-  if (state.recording) finishRecording(status.message || '기기 녹화가 예기치 않게 종료되었습니다')
+window.db.onLogcatStopped(serial => {
+  const device = deviceSlots.find(slot => slot.serial === serial)
+  if (device) withActiveDevice(device, () => setLogcatRunning(false))
+})
+window.db.onRecordEnded((status, serial) => {
+  const device = deviceSlots.find(slot => slot.serial === serial)
+  if (device?.recording) withActiveDevice(device, () => finishRecording(status.message || '기기 녹화가 예기치 않게 종료되었습니다'))
 })
 window.db.onUpdateStatus(status => {
   const label = $('updateStatus')
@@ -1132,6 +1341,7 @@ function closeMirrorWs() {
 }
 
 function initDecoder(canvas, width, height) {
+  const device = activeDevice
   // 기존 디코더만 정리 (WS는 유지)
   stopDecoder()
   canvas.width = width || 1080
@@ -1147,6 +1357,7 @@ function initDecoder(canvas, width, height) {
 
   videoDecoder = new VideoDecoder({
     output(frame) {
+      withActiveDevice(device, () => {
       outputCount++
       if (outputCount <= 3) logToPanel(`[decoder] 출력 프레임 #${outputCount}: ${frame.codedWidth}×${frame.codedHeight}`)
       // frame.codedWidth 는 H.264 매크로블록 정렬로 16 배수까지 올림된 값이다(606→608).
@@ -1171,10 +1382,13 @@ function initDecoder(canvas, width, height) {
         ctx.drawImage(frame, 0, 0, vw, vh, 0, 0, vw, vh)
       }
       frame.close()
+      })
     },
     error(e) {
-      console.error('[mirror] VideoDecoder error:', e)
-      logToPanel(`[decoder] ❌ 오류: ${e.message}`)
+      withActiveDevice(device, () => {
+        console.error('[mirror] VideoDecoder error:', e)
+        logToPanel(`[decoder] ❌ 오류: ${e.message}`)
+      })
     }
   })
 
@@ -1193,8 +1407,6 @@ function initDecoder(canvas, width, height) {
 //   - 첫 패킷: SPS+PPS (config only, 29B 등)
 //   - 이후: IDR 또는 P-frame
 // VideoDecoder는 config만으로는 디코딩 불가 → SPS+PPS를 IDR 앞에 붙여야 함
-let configNalBuffer = null  // SPS+PPS 바이트 캐시
-
 function feedFrame(uint8) {
   if (!videoDecoder || videoDecoder.state === 'closed') return
 
@@ -1252,6 +1464,7 @@ function feedFrame(uint8) {
 
 
 function connectMirrorWs(canvas, wsPort, session) {
+  const device = activeDevice
   if (mirrorWs) { const previous = mirrorWs; mirrorWs = null; previous.close() }
 
   // bridge가 준비될 때까지 재시도 (최대 10회, 600ms 간격)
@@ -1260,7 +1473,7 @@ function connectMirrorWs(canvas, wsPort, session) {
 
   const logMirror = msg => {
     const el = document.getElementById('scrcpyLog')
-    if (el) { el.textContent += '[renderer] ' + msg + '\n'; el.scrollTop = el.scrollHeight }
+    if (el) { el.textContent += `[기기 ${device.slot}] [renderer] ${msg}\n`; el.scrollTop = el.scrollHeight }
   }
   let wsFrameCount = 0
 
@@ -1270,14 +1483,14 @@ function connectMirrorWs(canvas, wsPort, session) {
     const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`)
     ws.binaryType = 'arraybuffer'
 
-    ws.onopen = () => {
+    ws.onopen = () => withActiveDevice(device, () => {
       if (session !== mirrorSession || !state.mirroring) { ws.close(); return }
       mirrorWs = ws
       wsFrameCount = 0
       logMirror('★ WS 연결 성공!')
-    }
+    })
 
-    ws.onmessage = e => {
+    ws.onmessage = e => withActiveDevice(device, () => {
       if (session !== mirrorSession || mirrorWs !== ws) return
       if (typeof e.data === 'string') {
         try {
@@ -1291,12 +1504,13 @@ function connectMirrorWs(canvas, wsPort, session) {
             state.aspectRatio = msg.width / msg.height
             changeScreenSize()
             initDecoder(canvas, msg.width, msg.height)
-            setText('resText', `${msg.width}×${msg.height}`)
+            const resolution = slotElement(device, 'slotActivity')
+            if (resolution) resolution.title = `${msg.width}×${msg.height}`
             showToast(`미러링 중 — ${msg.width}×${msg.height}`)
           } else if (msg.type === 'keyboardMode') {
             keyboardMode = msg.mode
             logMirror(`키보드 모드: ${msg.mode}`)
-            const kbEl = document.getElementById('kbModeText')
+            const kbEl = slotElement(device, 'kbModeText')
             if (kbEl) {
               kbEl.textContent = msg.mode === 'uhid'
                 ? '물리 키보드 (UHID)' : '클립보드 (UHID 사용 불가)'
@@ -1304,7 +1518,7 @@ function connectMirrorWs(canvas, wsPort, session) {
             if (msg.mode === 'uhid') {
               // 모드는 미러링 시작 뒤에 정해진다. 이미 textarea 에 포커스가 가 있으면
               // Windows IME 가 붙은 상태이므로 편집 불가한 캔버스로 옮긴다.
-              document.getElementById('mirrorCanvas')?.focus()
+              slotElement(device, 'mirrorCanvas')?.focus()
               showToast('물리 키보드 모드 — 한/영 키로 전환하세요')
             }
           } else if (msg.type === 'stopped') {
@@ -1323,30 +1537,30 @@ function connectMirrorWs(canvas, wsPort, session) {
         }
         feedFrame(arr)
       }
-    }
+    })
 
-    ws.onerror = (ev) => {
+    ws.onerror = (ev) => withActiveDevice(device, () => {
       if (session !== mirrorSession) return
       logMirror(`WS onerror 발생 (시도 ${attempts + 1}/${MAX})`)
       if (mirrorWs === ws) mirrorWs = null
       ws.close()
       attempts++
       if (attempts < MAX) {
-        setTimeout(tryWs, 600)
+        setTimeout(() => withActiveDevice(device, tryWs), 600)
       } else {
         logMirror('WS 최대 재시도 초과 → 미러링 중단')
         showToast('미러링 연결 오류 — 로그를 확인해 주세요', true)
         state.mirroring = false
         resetPhoneScreen()
       }
-    }
-    ws.onclose = (ev) => {
+    })
+    ws.onclose = (ev) => withActiveDevice(device, () => {
       if (session !== mirrorSession || mirrorWs !== ws) return
       logMirror(`WS onclose (code=${ev.code}, reason=${ev.reason || 'none'}, 수신프레임=${wsFrameCount})`)
       mirrorWs = null
       state.mirroring = false
       resetPhoneScreen()
-    }
+    })
   }
 
   tryWs()
@@ -1355,6 +1569,7 @@ function connectMirrorWs(canvas, wsPort, session) {
 async function startMirror() {
   if (!requireDevice()) return
   if (state.mirroring) return
+  const device = activeDevice
 
   const bitrate = parseInt(document.getElementById('defBitrate')?.value || 8)
   const fps = parseInt(document.getElementById('defFps')?.value || 60)
@@ -1364,60 +1579,69 @@ async function startMirror() {
   if (logEl) logEl.textContent = '미러링 준비 중...\n'
 
   // IPC 로그 핸들러 등록 (중복 방지: preload의 removeAllListeners로 처리됨)
-  window.db.onMirrorLog(msg => {
-    const el = document.getElementById('scrcpyLog')
-    if (!el) return
-    el.textContent += msg + '\n'
-    el.scrollTop = el.scrollHeight
-  })
+  if (!mirrorLogListenerRegistered) {
+    window.db.onMirrorLog((msg, serial) => {
+      const target = deviceSlots.find(slot => slot.serial === serial) || activeDevice
+      withActiveDevice(target, () => mirrorLog(msg))
+    })
+    mirrorLogListenerRegistered = true
+  }
 
-  const session = ++mirrorSession
-  state.mirroring = true
-  updateMirrorToggle()   // 시작은 오래 걸리므로 버튼부터 바로 뒤집는다
+  const session = ++device.mirrorSession
+  device.mirroring = true
+  withActiveDevice(device, updateMirrorToggle)   // 시작은 오래 걸리므로 버튼부터 바로 뒤집는다
   const canvas = getMirrorCanvas()
+  if (!canvas) { device.mirroring = false; return }
 
   // 동적 웹소켓 포트 요청 및 초기화
-  const wsPort = await window.db.initMirror()
-  if (session !== mirrorSession) return
+  const wsPort = await window.db.initMirror(device.serial)
+  if (session !== device.mirrorSession) return
 
   // WS 연결 시도 (bridge보다 먼저 시작 — retry로 버팀)
-  connectMirrorWs(canvas, wsPort, session)
+  withActiveDevice(device, () => connectMirrorWs(canvas, wsPort, session))
 
   // bridge 시작 (jar 푸시 + 서버 실행 + 소켓 연결)
   const r = await window.db.startMirror({
-    serial: state.serial,
+    serial: device.serial,
     videoBitrate: bitrate,
-    maxSize: state.maxSize || 0,
+    maxSize: device.maxSize || 0,
     fps,
   })
-  if (session !== mirrorSession) return
+  if (session !== device.mirrorSession) return
 
   if (!r.ok) {
-    state.mirroring = false
-    stopDecoder()
-    resetPhoneScreen()
+    device.mirroring = false
+    withActiveDevice(device, () => { stopDecoder(); resetPhoneScreen() })
     if (logEl) logEl.textContent += '\n[ERROR] ' + (r.message || '알 수 없는 오류') + '\n'
     showToast('미러링 실패 — 로그 패널 확인', true)
-    updateMirrorToggle()
+    withActiveDevice(device, updateMirrorToggle)
     return
   }
 
-  setText('statusText', '미러링 중', 'var(--accent2)')
-  updateMirrorToggle()
+  withActiveDevice(device, () => {
+    setText('statusText', '미러링 중', 'var(--accent2)')
+    updateMirrorToggle()
+  })
 }
 
 async function stopMirror() {
-  mirrorSession++
-  stopDecoder()
-  closeMirrorWs()
-  configNalBuffer = null
-  keyboardMode = 'clipboard'   // 다음 세션에서 bridge 가 다시 판정해 알려준다
-  await window.db.stopMirror()
-  state.mirroring = false
-  resetPhoneScreen()
-  setText('statusText', '연결됨', 'var(--accent2)')
-  showToast('미러링 중지됨')
-  updateMirrorToggle()
+  const device = activeDevice
+  const serial = device.serial
+  withActiveDevice(device, () => {
+    device.mirrorSession++
+    stopDecoder()
+    closeMirrorWs()
+    device.configNalBuffer = null
+    device.keyboardMode = 'clipboard'
+    device.mirroring = false
+    resetPhoneScreen()
+  })
+  await window.db.stopMirror(serial)
+  withActiveDevice(device, () => {
+    setText('statusText', '연결됨', 'var(--accent2)')
+    showToast('미러링 중지됨')
+    updateMirrorToggle()
+  })
 }
 
 // ── 기기 연결 / 해제 ───────────────────────────────────────────
@@ -1429,33 +1653,49 @@ function toggleConnection() {
 }
 
 async function disconnectDevice() {
-  const name = state.model || state.serial
-  if (state.recording) await finishRecording()
-  if (state.mirroring) await stopMirror()
-  if (logcatRunning) { await window.db.stopLogcat(); setLogcatRunning(false) }
-  stopActivityPolling()
+  const device = activeDevice
+  const name = device.model || device.serial
+  if (device.recording) await withActiveDevice(device, () => finishRecording())
+  if (device.mirroring) await withActiveDevice(device, () => stopMirror())
+  if (device.logcatRunning) {
+    await window.db.stopLogcat(device.serial)
+    withActiveDevice(device, () => setLogcatRunning(false))
+  }
+  stopActivityPolling(device)
 
   // 실제로 끊을 수 있는 건 Wi-Fi(TCP) 뿐이다. USB 는 '선택 해제'가 전부다.
-  if (state.serial && state.serial.includes(':')) await window.db.disconnect(state.serial)
+  if (device.serial && device.serial.includes(':')) await window.db.disconnect(device.serial)
 
-  state.serial = null
-  state.model = null
-  currentPkg = null
-  currentPid = null
-  logcatPidFilter = null
-  deviceInfo = null
-  clearLogcat()
-  clearIssue()
-  setClass('connBadge', 'conn-badge disconnected')
-  setText('connText', '연결되지 않음')
-  setText('appPkg', '—')
-  setText('appVer', '')
-  for (const id of ['devModel', 'devOs', 'devPhone']) setText(id, '—')
-  setClass('phoneIcon', 'ti ti-device-mobile-off')
-  resetPhoneScreen()
-  updateLogFilterBtn()
-  updateConnToggle()
-  showToast((name || '기기') + ' 연결 해제됨')
+  withActiveDevice(device, () => {
+    clearDeviceLogcat(device)
+    device.serial = null
+    device.model = null
+    device.currentPkg = null
+    device.currentPid = null
+    device.logcatPidFilter = null
+    device.deviceInfo = null
+    device.mirroring = false
+    device.logcatRunning = false
+    clearIssue()
+    const modelEl = slotElement(device, 'slotModel')
+    const statusEl = slotElement(device, 'slotStatus')
+    if (modelEl) modelEl.textContent = '연결할 기기 선택'
+    if (statusEl) { statusEl.textContent = '미연결'; statusEl.classList.remove('connected') }
+    const recordStatus = slotElement(device, 'recordStatus')
+    if (recordStatus) {
+      recordStatus.dataset.state = 'idle'
+      recordStatus.textContent = '기기를 연결하면 녹화할 수 있습니다'
+      recordStatus.title = ''
+    }
+    const icon = slotElement(device, 'phoneIcon')
+    const message = slotElement(device, 'phoneMsg')
+    if (icon) icon.style.display = ''
+    if (message) message.style.display = ''
+    resetPhoneScreen()
+    updateLogFilterBtn()
+    updateConnToggle()
+    showToast((name || '기기') + ' 연결 해제됨')
+  })
 }
 
 // 버튼 한 개가 여러 역할을 하므로 탭·연결 상태가 바뀔 때마다 모양을 맞춰준다.
@@ -1494,6 +1734,7 @@ async function keyevent(code) {
 
 // ── 화면 캡처 ──────────────────────────────────────────────────
 // 캡처는 바로 저장하지 않고 미리보기를 먼저 띄운다. 저장 위치는 저장을 누른 뒤 고른다.
+let captureSerial = null
 // dir: -1 = 좌로 90°, +1 = 우로 90°. 네 방향을 순환한다.
 // 돌아간 화면이 곧 결과라 토스트는 띄우지 않는다 (누를 때마다 떠서 거슬린다).
 function rotateView(dir) {
@@ -1524,8 +1765,10 @@ function spinCanvasNow(dir) {
 
 async function takeScreenshot() {
   if (!requireDevice()) return
+  const serial = activeDevice.serial
+  captureSerial = serial
   showToast('캡처 중...')
-  const r = await window.db.screenshot(state.serial)
+  const r = await window.db.screenshot(serial)
   if (!r.ok) { showToast(r.message || '캡처 실패', true); return }
   const img = $('capturePreview')
   if (img) img.src = r.dataUrl
@@ -1533,25 +1776,28 @@ async function takeScreenshot() {
 }
 
 async function saveCapture() {
-  const r = await window.db.saveCapture()
+  const r = await window.db.saveCapture(captureSerial)
   if (r.canceled) return                       // 저장 대화상자를 닫은 것 — 미리보기는 유지
   closeCaptureModal()
+  captureSerial = null
   if (r.ok) showToast('저장 완료: ' + r.path)
   else showToast(r.message || '저장 실패', true)
 }
 
 // 복사 후에도 미리보기를 닫는다 — 붙여넣으러 바로 나가는 흐름이라 남겨둘 이유가 없다
 async function copyCapture() {
-  const r = await window.db.copyCapture()
+  const r = await window.db.copyCapture(captureSerial)
   if (!r.ok) { showToast(r.message || '복사 실패', true); return }
   closeCaptureModal()
-  window.db.discardCapture()
+  window.db.discardCapture(captureSerial)
+  captureSerial = null
   showToast('캡처가 클립보드에 복사되었습니다')
 }
 
 function cancelCapture() {
   closeCaptureModal()
-  window.db.discardCapture()
+  window.db.discardCapture(captureSerial)
+  captureSerial = null
 }
 
 function closeCaptureModal() {
@@ -1562,6 +1808,12 @@ function closeCaptureModal() {
 
 // ── 화면 녹화 ──────────────────────────────────────────────────
 function setRecordingStatus(status, text, filePath) {
+  const strip = slotElement(activeDevice, 'recordStatus')
+  if (strip) {
+    strip.dataset.state = status
+    strip.textContent = text + (filePath ? ` · ${filePath}` : '')
+    strip.title = filePath || text
+  }
   const el = $('recStatus')
   if (el) el.dataset.state = status
   setText('recStatusText', text)
@@ -1571,6 +1823,12 @@ function setRecordingStatus(status, text, filePath) {
 }
 
 function setRecordingUI(on, busy = false) {
+  const sideButton = slotElement(activeDevice, 'recordButton')
+  if (sideButton) {
+    sideButton.classList.toggle('on', on)
+    sideButton.disabled = busy
+    sideButton.title = on ? '녹화 종료 및 저장' : '화면 녹화 시작'
+  }
   const btn = $('recToggle')
   if (btn) {
     btn.classList.toggle('on', on)
@@ -1586,42 +1844,47 @@ function setRecordingUI(on, busy = false) {
 async function toggleRecord() {
   if (!requireDevice()) return
   if (state.recordBusy) return
+  const device = activeDevice
 
   if (!state.recording) {
-    state.recordBusy = true
-    setRecordingUI(false, true)
-    setRecordingStatus('starting', '녹화 시작 중...')
+    device.recordBusy = true
+    withActiveDevice(device, () => {
+      setRecordingUI(false, true)
+      setRecordingStatus('starting', '녹화 시작 중...')
+    })
     const bitrate = parseInt($('recBitrate')?.value || '4')
     const size = $('recSize')?.value || ''
     try {
-      const r = await window.db.recordStart({ serial: state.serial, bitrate, size: size || null })
+      const r = await window.db.recordStart({ serial: device.serial, bitrate, size: size || null })
       if (!r.ok) {
-        setRecordingStatus('error', r.message || '녹화를 시작하지 못했습니다')
+        withActiveDevice(device, () => setRecordingStatus('error', r.message || '녹화를 시작하지 못했습니다'))
         showToast(r.message || '녹화 시작 실패', true)
         return
       }
 
-      state.recording = true
-      state.seconds = 0
-      setRecordingUI(true)
-      setText('recTimer', '00:00')
-      setRecordingStatus('recording', '녹화 중 · 00:00')
-      state.timerInterval = setInterval(() => {
-        state.seconds++
-        const m = Math.floor(state.seconds / 60)
-        const s = state.seconds % 60
+      device.recording = true
+      device.seconds = 0
+      withActiveDevice(device, () => {
+        setRecordingUI(true)
+        setText('recTimer', '00:00')
+        setRecordingStatus('recording', '녹화 중 · 00:00')
+      })
+      device.timerInterval = setInterval(() => withActiveDevice(device, () => {
+        device.seconds++
+        const m = Math.floor(device.seconds / 60)
+        const s = device.seconds % 60
         const elapsed = [m, s].map(n => String(n).padStart(2, '0')).join(':')
         setText('recTimer', elapsed)
         setRecordingStatus('recording', `녹화 중 · ${elapsed}`)
-        if (state.seconds >= 180) finishRecording()
-      }, 1000)
+        if (device.seconds >= 180) finishRecording()
+      }), 1000)
       showToast('화면 녹화 중 — 종료하려면 STOP을 누르세요')
     } catch (error) {
-      setRecordingStatus('error', `녹화 시작 실패: ${error.message}`)
+      withActiveDevice(device, () => setRecordingStatus('error', `녹화 시작 실패: ${error.message}`))
       showToast(`녹화 시작 실패: ${error.message}`, true)
     } finally {
-      state.recordBusy = false
-      if (!state.recording) setRecordingUI(false)
+      device.recordBusy = false
+      if (!device.recording) withActiveDevice(device, () => setRecordingUI(false))
     }
     return
   }
@@ -1631,33 +1894,37 @@ async function toggleRecord() {
 
 async function finishRecording(reason) {
   if (!state.recording || state.recordBusy) return
-  state.recordBusy = true
-  const serial = state.serial
-  clearInterval(state.timerInterval)
-  state.recording = false
-  setRecordingUI(false, true)
-  setRecordingStatus('saving', reason
-    ? `${reason} · 저장할 위치를 선택하세요...`
-    : '녹화를 종료하고 저장할 위치를 선택하세요...')
+  const device = activeDevice
+  const serial = device.serial
+  device.recordBusy = true
+  clearInterval(device.timerInterval)
+  device.timerInterval = null
+  device.recording = false
+  withActiveDevice(device, () => {
+    setRecordingUI(false, true)
+    setRecordingStatus('saving', reason
+      ? `${reason} · 저장할 위치를 선택하세요...`
+      : '녹화를 종료하고 저장할 위치를 선택하세요...')
+  })
   showToast(reason || '녹화 파일 저장 중...', !!reason, !reason)
   try {
     const r = await window.db.recordStop(serial)
     if (r.ok) {
-      setRecordingStatus('saved', '녹화 저장 완료', r.path)
+      withActiveDevice(device, () => setRecordingStatus('saved', '녹화 저장 완료', r.path))
       showToast('녹화 저장 완료: ' + r.path)
     } else if (r.canceled) {
-      setRecordingStatus('canceled', '저장을 취소했습니다. 녹화본은 기기에 임시 보관되어 있습니다.')
+      withActiveDevice(device, () => setRecordingStatus('canceled', '저장을 취소했습니다. 녹화본은 기기에 임시 보관되어 있습니다.'))
       showToast('녹화 저장을 취소했습니다', true)
     } else {
-      setRecordingStatus('error', r.message || '녹화 저장 실패')
+      withActiveDevice(device, () => setRecordingStatus('error', r.message || '녹화 저장 실패'))
       showToast(r.message || '녹화 저장 실패', true)
     }
   } catch (error) {
-    setRecordingStatus('error', `녹화 저장 실패: ${error.message}`)
+    withActiveDevice(device, () => setRecordingStatus('error', `녹화 저장 실패: ${error.message}`))
     showToast(`녹화 저장 실패: ${error.message}`, true)
   } finally {
-    state.recordBusy = false
-    setRecordingUI(false)
+    device.recordBusy = false
+    withActiveDevice(device, () => setRecordingUI(false))
   }
 }
 
@@ -1923,47 +2190,11 @@ function addFileQueueItem(name, ok) {
   showToast(ok ? name + ' 전송 완료' : '전송 실패', !ok)
 }
 
-// 디바이스는 앱 높이를 꽉 채우고, 너비는 기기 화면비로 역산한다.
-// LogCat 패널 너비는 디바이스 너비의 2배로 맞춘다(요청).
-const LOGCAT_MIN_WIDTH = 720   // style.css 의 .logcat-col min-width 와 맞출 것
-const TOOL_WIDTH = 290         // style.css 의 .tool-col flex-basis 와 맞출 것
-const TOOL_COLLAPSED_WIDTH = 18 // style.css 의 .tool-col.collapsed 와 맞출 것
-const LAYOUT_GAP = 16        // .layout gap
-const LAYOUT_PAD = 16        // .layout padding
-let lastMinWidth = 0
-
 function changeScreenSize() {
   const screen = $('phoneScreen')
-  const frame = screen?.parentElement
-  if (!screen || !frame) return
-
-  const aspect = state.aspectRatio || (9 / 19.5)   // 연결 전 기본 비율
-
-  // 디바이스는 컬럼 높이를 그대로 쓴다. 여기서 최소값을 억지로 키우면 프레임보다 커져
-  // 창 밖으로 넘치고 잘린다 — 최소 크기는 아래에서 '창을 못 줄이게' 하는 쪽으로 강제한다.
-  const frameH = Math.round(frame.clientHeight)
-  if (frameH <= 0) return          // 레이아웃이 아직 안 잡혔다
-  const h = frameH
-  const w = Math.round(h * aspect)
-
-  screen.style.height = h + 'px'
-  screen.style.width = w + 'px'
-
-  // LogCat 은 남는 공간을 전부 가져간다. 상한을 두면 창을 넓혀도 안 늘어나고 오른쪽이
-  // 빈 채로 남는다. 기본 창 크기에서는 자연히 디바이스의 2배쯤이 된다.
-
-  // 가로만 막는다 — 세로 최소치는 main 이 '실행 시 높이'로 고정해 두었다.
-  // 도구(접혔으면 좁게) + 현재 디바이스 + LogCat 최소폭 + 여백
-  //
-  // 디바이스 폭은 폰 화면 w 가 아니라 '컬럼의 실제 폭'을 재서 쓴다. 창이 낮으면 폰은
-  // 좁아지는데 위쪽 아이콘 툴바는 그대로라 컬럼이 폰보다 넓어지고, w 로 계산하면 그
-  // 차이만큼 최소 너비가 모자라 LogCat 오른쪽 패딩이 잘려 나간다.
-  const colW = Math.ceil(frame.parentElement.getBoundingClientRect().width) || w
-  const toolW = (isToolPanelCollapsed() ? TOOL_COLLAPSED_WIDTH : TOOL_WIDTH) + LAYOUT_GAP
-  const minW = Math.ceil(toolW + Math.max(colW, w) + LOGCAT_MIN_WIDTH + LAYOUT_GAP + LAYOUT_PAD * 2)
-  if (minW !== lastMinWidth) {
-    lastMinWidth = minW
-    window.db.setMinSize(minW)
+  if (screen) {
+    screen.style.removeProperty('height')
+    screen.style.removeProperty('width')
   }
 }
 
@@ -1975,11 +2206,27 @@ function isToolPanelCollapsed() {
 
 function toggleToolPanel() {
   const col = document.querySelector('.tool-col')
+  if (col?.classList.contains('visible')) {
+    col.classList.remove('visible')
+    return
+  }
   if (!col) return
   const collapsed = col.classList.toggle('collapsed')
   localStorage.setItem('db_tools_collapsed', collapsed ? '1' : '0')
   updateToolToggleIcon()
   changeScreenSize()   // 가용 너비가 달라졌으니 다시 잰다
+}
+
+function toggleToolDrawer() {
+  const col = document.querySelector('.tool-col')
+  if (!col) return
+  if (col.classList.contains('visible')) {
+    col.classList.remove('visible')
+    return
+  }
+  document.body.appendChild(col)
+  col.classList.add('visible')
+  switchPage('settings', document.querySelector('.tool-tab[onclick*="settings"]'))
 }
 
 function updateToolToggleIcon() {
@@ -2495,8 +2742,12 @@ async function openJiraModal(fromIssue = false) {
   }
 
   // 로그를 첨부할 것이므로 그동안 로그가 더 쌓이지 않게 멈춘다 (닫으면 다시 돌린다)
-  jiraPausedLogcat = logcatRunning
-  if (logcatRunning) { await window.db.stopLogcat(); setLogcatRunning(false) }
+  jiraPausedDevice = activeDevice
+  jiraPausedLogcat = jiraPausedDevice.logcatRunning
+  if (jiraPausedLogcat) {
+    await window.db.stopLogcat(jiraPausedDevice.serial)
+    withActiveDevice(jiraPausedDevice, () => setLogcatRunning(false))
+  }
 
   setText('jiraMTarget', `${jiraCfgCache.projectName ? jiraCfgCache.projectName + ' - ' : ''}${jiraCfgCache.project} 에 등록합니다`)
   clearJiraVideo()
@@ -2559,14 +2810,18 @@ function closeJiraModal(save = true) {
   if (save) saveJiraDraft()
   $('jiraOverlay')?.classList.remove('open')
   closePickers()
-  if (jiraPausedLogcat && state.serial) {   // 멈춰뒀던 로그를 도로 돌린다
-    window.db.startLogcat(state.serial)
-    setLogcatRunning(true)
+  if (jiraPausedLogcat && jiraPausedDevice?.serial) {
+    window.db.startLogcat(jiraPausedDevice.serial)
+      .then(result => {
+        if (result.ok) withActiveDevice(jiraPausedDevice, () => setLogcatRunning(true))
+        else showToast('LogCat 재시작 실패: ' + (result.message || ''), true)
+      })
   }
   jiraPausedLogcat = false
 }
 
 let jiraPausedLogcat = false
+let jiraPausedDevice = null
 let jiraVideoPath = ''
 
 async function pickJiraVideo() {

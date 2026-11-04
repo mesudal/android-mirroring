@@ -11,9 +11,9 @@ contextBridge.exposeInMainWorld('db', {
   disconnect: (target) => ipcRenderer.invoke('adb:disconnect', target),
 
   // 미러링 (MirrorBridge)
-  initMirror: () => ipcRenderer.invoke('mirror:init'),
+  initMirror: (serial) => ipcRenderer.invoke('mirror:init', serial),
   startMirror: (opts) => ipcRenderer.invoke('mirror:start', opts),
-  stopMirror: () => ipcRenderer.invoke('mirror:stop'),
+  stopMirror: (serial) => ipcRenderer.invoke('mirror:stop', serial),
   // 중복 리스너 방지: 항상 기존 리스너 제거 후 새로 등록
   onMirrorLog: (cb) => {
     ipcRenderer.removeAllListeners('mirror:log')
@@ -22,15 +22,15 @@ contextBridge.exposeInMainWorld('db', {
 
   // 캡처 / 녹화
   screenshot: (serial) => ipcRenderer.invoke('adb:screenshot', serial),
-  saveCapture: () => ipcRenderer.invoke('capture:save'),
-  copyCapture: () => ipcRenderer.invoke('capture:copy'),
-  discardCapture: () => ipcRenderer.invoke('capture:discard'),
+  saveCapture: (serial) => ipcRenderer.invoke('capture:save', serial),
+  copyCapture: (serial) => ipcRenderer.invoke('capture:copy', serial),
+  discardCapture: (serial) => ipcRenderer.invoke('capture:discard', serial),
   setMinSize: (w, h) => ipcRenderer.invoke('window:set-min-size', w, h),
   recordStart: (opts) => ipcRenderer.invoke('adb:record-start', opts),
   recordStop: (serial) => ipcRenderer.invoke('adb:record-stop', serial),
   onRecordEnded: (cb) => {
     ipcRenderer.removeAllListeners('adb:record-ended')
-    ipcRenderer.on('adb:record-ended', (_, status) => cb(status))
+    ipcRenderer.on('adb:record-ended', (_, status, serial) => cb(status, serial))
   },
 
   // APK / 파일
@@ -75,15 +75,15 @@ contextBridge.exposeInMainWorld('db', {
 
   // LogCat
   startLogcat: (serial) => ipcRenderer.invoke('logcat:start', serial),
-  stopLogcat: () => ipcRenderer.invoke('logcat:stop'),
+  stopLogcat: (serial) => ipcRenderer.invoke('logcat:stop', serial),
   saveLogcat: (text) => ipcRenderer.invoke('logcat:save', text),
   onLogcatData: (cb) => {
     ipcRenderer.removeAllListeners('logcat:data')
-    ipcRenderer.on('logcat:data', (_, chunk) => cb(chunk))
+    ipcRenderer.on('logcat:data', (_, chunk, serial) => cb(chunk, serial))
   },
   onLogcatStopped: (cb) => {
     ipcRenderer.removeAllListeners('logcat:stopped')
-    ipcRenderer.on('logcat:stopped', () => cb())
+    ipcRenderer.on('logcat:stopped', (_, serial) => cb(serial))
   },
 
   // 패킷 분석 프록시

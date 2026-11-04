@@ -11,6 +11,108 @@
 </head>
 
 <body>
+  <header class="dual-topbar">
+    <div class="logo"><span class="logo-dot"></span>DroidBridge <small>분할 보기</small></div>
+    <div class="nav-spacer"></div>
+    <button class="btn-sm" onclick="toggleToolDrawer()"><i class="ti ti-settings"></i>프로그램 설정</button>
+  </header>
+  <main class="dual-workspace">
+    <section class="device-panel active" data-slot="A">
+      <header class="device-panel-head">
+        <strong>기기 A</strong><span class="device-model" data-role="slotModel">연결할 기기 선택</span>
+        <button class="btn-sm" onclick="activateSlot('A');openConnectModal()"><i class="ti ti-plug"></i>기기 선택</button>
+        <span class="device-status" data-role="slotStatus">미연결</span>
+      </header>
+      <div class="device-panel-body">
+        <aside class="device-side-tools">
+          <button onclick="activateSlot('A');keyevent(4)" title="뒤로"><i class="ti ti-arrow-left"></i></button>
+          <button onclick="activateSlot('A');keyevent(3)" title="홈"><i class="ti ti-circle"></i></button>
+          <button onclick="activateSlot('A');keyevent(187)" title="최근 앱"><i class="ti ti-layout-grid"></i></button>
+          <span class="side-divider"></span>
+          <button onclick="activateSlot('A');openJiraModal()" title="Jira 티켓 발행"><i class="ti ti-ticket"></i></button>
+          <button onclick="activateSlot('A');appAction('clear')" title="데이터 삭제"><i class="ti ti-eraser"></i></button>
+          <button onclick="activateSlot('A');appAction('settings')" title="앱 정보"><i class="ti ti-info-circle"></i></button>
+          <button onclick="toggleToolDrawer()" title="프로그램 설정"><i class="ti ti-settings"></i></button>
+          <span class="side-divider"></span>
+          <button onclick="activateSlot('A');rotateView(-1)" title="좌로 회전"><i class="ti ti-rotate"></i></button>
+          <button onclick="activateSlot('A');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i></button>
+          <button class="side-record" data-role="recordButton" onclick="activateSlot('A');toggleRecord()" title="화면 녹화"><i class="ti ti-circle-filled"></i></button>
+          <button onclick="activateSlot('A');openApkPicker()" title="APK 설치"><i class="ti ti-package-import"></i></button>
+        </aside>
+        <div class="device-view">
+          <div class="phone-screen" data-role="phoneScreen" data-slot="A"
+            ondragover="event.preventDefault();this.classList.add('apk-drop')"
+            ondragleave="this.classList.remove('apk-drop')" ondrop="activateSlot('A');handleMirrorDrop(event)">
+            <i class="ti ti-device-mobile-off" data-role="phoneIcon"></i>
+            <p data-role="phoneMsg">기기를 연결해 주세요</p>
+          </div>
+          <div class="device-info-strip"><span data-role="appPkg">—</span><span data-role="appVer"></span><span data-role="slotActivity">—</span></div>
+          <div class="record-status-strip" data-role="recordStatus">기기를 연결하면 녹화할 수 있습니다</div>
+        </div>
+      </div>
+    </section>
+    <section class="device-panel" data-slot="B">
+      <header class="device-panel-head">
+        <strong>기기 B</strong><span class="device-model" data-role="slotModel">연결할 기기 선택</span>
+        <button class="btn-sm" onclick="activateSlot('B');openConnectModal()"><i class="ti ti-plug"></i>기기 선택</button>
+        <span class="device-status" data-role="slotStatus">미연결</span>
+      </header>
+      <div class="device-panel-body">
+        <aside class="device-side-tools">
+          <button onclick="activateSlot('B');keyevent(4)" title="뒤로"><i class="ti ti-arrow-left"></i></button>
+          <button onclick="activateSlot('B');keyevent(3)" title="홈"><i class="ti ti-circle"></i></button>
+          <button onclick="activateSlot('B');keyevent(187)" title="최근 앱"><i class="ti ti-layout-grid"></i></button>
+          <span class="side-divider"></span>
+          <button onclick="activateSlot('B');openJiraModal()" title="Jira 티켓 발행"><i class="ti ti-ticket"></i></button>
+          <button onclick="activateSlot('B');appAction('clear')" title="데이터 삭제"><i class="ti ti-eraser"></i></button>
+          <button onclick="activateSlot('B');appAction('settings')" title="앱 정보"><i class="ti ti-info-circle"></i></button>
+          <button onclick="toggleToolDrawer()" title="프로그램 설정"><i class="ti ti-settings"></i></button>
+          <span class="side-divider"></span>
+          <button onclick="activateSlot('B');rotateView(-1)" title="좌로 회전"><i class="ti ti-rotate"></i></button>
+          <button onclick="activateSlot('B');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i></button>
+          <button class="side-record" data-role="recordButton" onclick="activateSlot('B');toggleRecord()" title="화면 녹화"><i class="ti ti-circle-filled"></i></button>
+          <button onclick="activateSlot('B');openApkPicker()" title="APK 설치"><i class="ti ti-package-import"></i></button>
+        </aside>
+        <div class="device-view">
+          <div class="phone-screen" data-role="phoneScreen" data-slot="B"
+            ondragover="event.preventDefault();this.classList.add('apk-drop')"
+            ondragleave="this.classList.remove('apk-drop')" ondrop="activateSlot('B');handleMirrorDrop(event)">
+            <i class="ti ti-device-mobile-off" data-role="phoneIcon"></i>
+            <p data-role="phoneMsg">기기를 연결해 주세요</p>
+          </div>
+          <div class="device-info-strip"><span data-role="appPkg">—</span><span data-role="appVer"></span><span data-role="slotActivity">—</span></div>
+          <div class="record-status-strip" data-role="recordStatus">기기를 연결하면 녹화할 수 있습니다</div>
+        </div>
+      </div>
+    </section>
+    <div class="dual-log-resize" id="dualLogResize" title="드래그하여 로그 영역 크기 조절"></div>
+    <section class="dual-log-panel">
+      <div class="dual-log-tabs">
+        <button class="active" id="mirrorLogTab" onclick="showDualLogTab('mirror')">미러링 로그</button>
+        <button id="allLogTab" onclick="showDualLogTab('all')">전체 로그</button>
+        <div class="dual-log-controls" id="allLogControls">
+          <button class="btn-sm" id="logFilterBtn" onclick="toggleAppLogFilter()"
+            title="현재 포그라운드 앱의 로그만 보기"><i class="ti ti-filter"></i>현재 앱만</button>
+          <select id="dualLogDevice" onchange="setDualLogDevice(this.value)">
+            <option value="all">두 기기</option><option value="A">기기 A</option><option value="B">기기 B</option>
+          </select>
+          <select id="logcatLevel" class="logcat-level" onchange="setLogcatLevel(this.value)">
+            <option value="0">전체</option><option value="1">Debug 이상</option><option value="2">Info 이상</option><option value="3">Warn 이상</option><option value="4">Error 만</option>
+          </select>
+          <select id="logcatPreset" class="logcat-level" onchange="setLogcatPreset(this.value)">
+            <option value="">필터 없음</option><option value="http">HTTP 통신</option><option value="crash">예외 · 크래시 · ANR</option>
+          </select>
+          <input id="logcatFilter" class="logcat-filter" placeholder="로그 검색" oninput="renderLogcat()">
+          <button class="btn-icon" onclick="saveLogcat()" title="로그 저장"><i class="ti ti-download"></i></button>
+          <button class="btn-icon" onclick="clearLogcat()" title="로그 지우기"><i class="ti ti-trash"></i></button>
+          <button class="btn-icon" id="logcatToggle" onclick="toggleLogcat()" title="LogCat 시작/중지"><i class="ti ti-player-play"></i></button>
+        </div>
+      </div>
+      <pre class="dual-log-body" id="scrcpyLog"></pre>
+      <pre class="logcat-body" id="logcatBody" style="display:none"></pre>
+    </section>
+  </main>
+  <div class="dual-toast" id="dualToast"></div>
   <!-- 상단 nav 와 좌측 사이드바는 제거했다. 도구 전환은 우측 패널의 탭이 대신하고,
        기기 연결은 우측 '미러링' 탭의 버튼으로 한다. -->
   <div class="layout">
