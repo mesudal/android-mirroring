@@ -37,10 +37,6 @@ contextBridge.exposeInMainWorld('db', {
   openApkDialog: () => ipcRenderer.invoke('dialog:openApk'),
   openFileDialog: () => ipcRenderer.invoke('dialog:openFile'),
   openVideoDialog: () => ipcRenderer.invoke('dialog:openVideo'),
-  mirrosStatus: () => ipcRenderer.invoke('mirros:status'),
-  selectMirrosExe: () => ipcRenderer.invoke('mirros:select'),
-  openMirrosRelease: () => ipcRenderer.invoke('mirros:open-release'),
-  launchMirros: () => ipcRenderer.invoke('mirros:launch'),
   install: (opts) => ipcRenderer.invoke('adb:install', opts),
   patchAndInstallApk: (serial) => ipcRenderer.invoke('proxy:patch-and-install-apk', serial),
 

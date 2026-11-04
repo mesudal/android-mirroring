@@ -9,8 +9,6 @@ out/
 # 자동 다운로드 및 플랫폼별 실행 바이너리 폴더
 bin/
 # (bin 폴더 내의 adb, scrcpy 등은 실행/빌드 시 스크립트에 의해 자동으로 다운로드됩니다)
-build-assets/mirros/
-
 # OS 생성 임시 파일
 .DS_Store
 Thumbs.db

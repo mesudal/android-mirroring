@@ -24,14 +24,13 @@ Windows / macOS / Linux 지원
 | Jira 등록 | 미러링 탭 → **Jira 등록** | 캡처·로그 자동 첨부. [아래](#jira-백로그-등록) 참고 |
 | 기기 정보 | 미러링 탭 → 기기 | 모델·Android 버전·전화번호, 복사 버튼 |
 | 화질·녹화 설정 | 설정 탭 | SD / HD / FHD, 비트레이트·FPS, 화면 꺼짐 방지 |
-| iPhone 미러링 | 설정 탭 → **iPhone 미러링 · MirrOS** | Windows 설치본에 포함된 공식 앱을 별도 창으로 실행합니다. |
 
 ## 설치
 
 ### Windows
 
 `DroidBridge-Setup-<버전>.exe` 를 실행해 안내대로 설치합니다. 관리자 권한은 필요 없고, 바탕화면과 시작 메뉴에 **안드로이드 미러링** 바로가기가 생깁니다.
-adb와 MirrOS가 설치파일에 포함되어 별도 다운로드가 필요 없습니다. MirrOS 포함으로 설치파일 크기가 약 220MB 증가하며, 현재 Windows 설치파일은 약 300MB입니다. iPhone 기능을 쓰지 않는 경우에도 Windows 설치본에는 포함됩니다.
+adb가 설치파일에 포함되어 별도 다운로드가 필요 없습니다.
 
 > **"Windows의 PC 보호" 창이 뜨면** — 코드 서명을 하지 않은 설치파일이라 그렇습니다. **추가 정보 → 실행** 을 누르면 됩니다.
 
@@ -65,14 +64,6 @@ brew install android-platform-tools
 3. USB 연결 후 폰에 뜨는 "USB 디버깅 허용" 팝업에서 **허용**
 
 앱 왼쪽 아래 **기기 연결** 로 연결합니다.
-
-## iPhone 미러링 (MirrOS)
-
-Windows 설치본에는 MirrOS 1.2.0 Windows EXE와 동일 버전의 소스 아카이브가 포함됩니다. 설치 후 설정 탭의 **iPhone 미러링 · MirrOS**에서 **MirrOS 실행**을 누르면 별도 창으로 열립니다. EXE와 소스는 공식 GitHub 릴리즈에서 받아 고정 SHA-256을 확인한 뒤 패키징합니다. MirrOS 버전을 올릴 때는 빌드 스크립트의 버전과 해시도 함께 검토·갱신해야 합니다. 추가 구성요소와 라이선스 안내는 설치 폴더의 `resources\mirros`에서 확인할 수 있습니다.
-
-MirrOS는 Windows에서만 지원됩니다. iPhone은 iOS 17.4 이상이어야 하며, 처음 연결할 때 잠금 해제 상태에서 PC를 신뢰하고 iPhone의 개발자 모드를 켜야 합니다. Windows의 Apple Mobile Device Service가 필요하고 첫 실행 시 네트워크 연결이 요구될 수 있습니다. MirrOS의 공식 안내상 Windows 실기기 검증은 아직 충분하지 않으므로, 호환성 및 최신 요구사항은 [공식 문서](https://github.com/Cristiant2608/mirros)를 확인하세요.
-
-MirrOS는 MIT 라이선스 프로젝트이며, 포함된 `pymobiledevice3` 백엔드는 GPL-3.0 라이선스를 따릅니다. 대응 소스 아카이브와 라이선스 고지는 설치본에도 함께 포함됩니다. 기타 종속성은 각자의 라이선스를 유지합니다.
 
 ## LogCat
 
