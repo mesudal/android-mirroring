@@ -11,7 +11,9 @@ const jira = require('./jira')
 
 const WINDOW_PREFERENCES = path.join(app.getPath('userData'), 'window-preferences.json')
 const MIN_WINDOW_WIDTH = 720
-const MIN_WINDOW_HEIGHT = 450
+const MIN_WINDOW_HEIGHT = 320
+const touchIndicatorStates = new Map()
+let quittingAfterTouchIndicatorRestore = false
 
 function isAlwaysOnTopPreferenceEnabled() {
   try {
@@ -276,6 +278,15 @@ app.whenReady().then(() => {
 })
 app.on('window-all-closed', () => { if (platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (!mainWindow) createWindow() })
+app.on('before-quit', event => {
+  if (quittingAfterTouchIndicatorRestore || touchIndicatorStates.size === 0) return
+  event.preventDefault()
+  Promise.all([...touchIndicatorStates.keys()].map(restoreTouchIndicator))
+    .finally(() => {
+      quittingAfterTouchIndicatorRestore = true
+      app.quit()
+    })
+})
 
 ipcMain.handle('app:update-check', () => startUpdateCheck(true))
 ipcMain.handle('app:update-download', async () => {
@@ -324,6 +335,37 @@ function runAdb(args) {
   })
 }
 
+async function enableTouchIndicator(serial) {
+  if (touchIndicatorStates.has(serial)) return { ok: true }
+  try {
+    const current = await runAdb(['-s', serial, 'shell', 'settings', 'get', 'system', 'show_touches'])
+    const original = current && current !== 'null' ? current : null
+    touchIndicatorStates.set(serial, original)
+    if (original !== '1') await runAdb(['-s', serial, 'shell', 'settings', 'put', 'system', 'show_touches', '1'])
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, message: `Android 탭 표시를 켜지 못했습니다: ${String(error)}` }
+  }
+}
+
+async function restoreTouchIndicator(serial) {
+  if (!touchIndicatorStates.has(serial)) return { ok: true }
+  const original = touchIndicatorStates.get(serial)
+  try {
+    if (original === null) {
+      await runAdb(['-s', serial, 'shell', 'settings', 'delete', 'system', 'show_touches'])
+    } else {
+      await runAdb(['-s', serial, 'shell', 'settings', 'put', 'system', 'show_touches', original])
+    }
+    touchIndicatorStates.delete(serial)
+    return { ok: true }
+  } catch (error) {
+    const message = `Android 탭 표시 설정을 복원하지 못했습니다: ${String(error)}`
+    try { fs.appendFileSync(MIRROR_LOG, `${new Date().toISOString()} ${message}\n`) } catch { }
+    return { ok: false, message }
+  }
+}
+
 // ── IPC 핸들러들 ──────────────────────────────────────────────
 
 // 기기 목록
@@ -362,13 +404,21 @@ ipcMain.handle('adb:disconnect', async (_, target) => {
 
 // ── 미러링 IPC (MirrorBridge 사용) ────────────────────────────
 ipcMain.handle('mirror:start', async (_, { serial, maxSize, videoBitrate, fps }) => {
+  let touchIndicatorError = null
   try {
     adbPath = resolveBin(adbBin) // 재탐색 (setup 이후 변경 대응)
+    const touchIndicator = await enableTouchIndicator(serial)
+    if (!touchIndicator.ok) touchIndicatorError = touchIndicator.message
     await getMirror(serial).start({ serial, maxSize, videoBitrate, fps })
     if (!clipboardPollTimer) startDesktopClipboardSync()
-    return { ok: true }
+    return { ok: true, touchIndicatorError }
   } catch (e) {
-    return { ok: false, message: e.message }
+    const restored = await restoreTouchIndicator(serial)
+    return {
+      ok: false,
+      message: e.message,
+      touchIndicatorError: restored.ok ? touchIndicatorError : restored.message,
+    }
   }
 })
 
@@ -377,7 +427,8 @@ ipcMain.handle('mirror:stop', async (_, serial) => {
   await bridge?.stop()
   if (bridge) mirrors.delete(serial)
   if (![...mirrors.values()].some(item => item.running)) stopDesktopClipboardSync()
-  return { ok: true }
+  const touchIndicator = await restoreTouchIndicator(serial)
+  return { ok: true, touchIndicatorError: touchIndicator.ok ? null : touchIndicator.message }
 })
 
 ipcMain.handle('mirror:init', async (_, serial) => {

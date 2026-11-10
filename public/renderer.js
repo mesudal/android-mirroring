@@ -9,6 +9,7 @@ function createDeviceState(slot) {
     mirroring: false,
     recording: false,
     screenOff: false,
+    viewBrightness: 100,
     recordBusy: false,
     timerInterval: null,
     activityInterval: null,
@@ -55,8 +56,8 @@ function createThirdDevicePanel() {
   const panel = secondPanel.cloneNode(true)
   panel.dataset.slot = 'C'
   panel.querySelector('strong').textContent = '기기 C'
-  panel.querySelectorAll('[onclick], [ondrop]').forEach(element => {
-    for (const attribute of ['onclick', 'ondrop']) {
+  panel.querySelectorAll('[onclick], [ondrop], [oninput]').forEach(element => {
+    for (const attribute of ['onclick', 'ondrop', 'oninput']) {
       const handler = element.getAttribute(attribute)
       if (handler) element.setAttribute(attribute, handler.replaceAll("'B'", "'C'"))
     }
@@ -300,7 +301,16 @@ async function selectDevice(d) {
 
 function setConnected(name) {
   const device = activeDevice
+  device.viewBrightness = 100
   updateDevicePanels()
+  const brightness = slotElement(device, 'screenBrightness')
+  const brightnessInput = brightness?.querySelector('input[type="range"]')
+  const brightnessValue = slotElement(device, 'screenBrightnessValue')
+  if (brightnessInput) brightnessInput.value = '100'
+  if (brightnessValue) brightnessValue.textContent = '100%'
+  if (brightness) brightness.hidden = false
+  const canvas = slotElement(device, 'phoneScreen')?.querySelector('canvas')
+  if (canvas) canvas.style.filter = ''
   const modelEl = slotElement(device, 'slotModel')
   const statusEl = slotElement(device, 'slotStatus')
   if (modelEl) modelEl.textContent = name
@@ -433,23 +443,36 @@ function getMirrorCanvas() {
   if (!screen) return null
   let c = screen.querySelector('canvas')
   if (!c) {
-    screen.innerHTML = ''
+    const brightness = screen.querySelector('[data-role="screenBrightness"]')
+    screen.replaceChildren()
     c = document.createElement('canvas')
     c.dataset.role = 'mirrorCanvas'
     c.style.cssText = 'width:100%;height:100%;object-fit:contain;border-radius:18px;background:#000;cursor:pointer'
+    c.style.filter = `brightness(${activeDevice.viewBrightness}%)`
 
     // 숨겨진 키보드 입력용 textarea 생성
     const input = document.createElement('textarea')
     input.dataset.role = 'mirrorInput'
     input.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:0;height:0;opacity:0'
-    screen.appendChild(input)
-
     // 마우스 제어 및 키보드 제어 이벤트 바인딩
     setupCanvasEvents(c, input)
 
     screen.appendChild(c)
+    screen.appendChild(input)
+    if (brightness) screen.appendChild(brightness)
   }
   return c
+}
+
+function setScreenBrightness(slot, value) {
+  const device = deviceSlots.find(item => item.slot === slot)
+  if (!device) return
+  const brightness = Math.min(200, Math.max(25, Number(value) || 100))
+  device.viewBrightness = brightness
+  const canvas = slotElement(device, 'phoneScreen')?.querySelector('canvas')
+  if (canvas) canvas.style.filter = `brightness(${brightness}%)`
+  const output = slotElement(device, 'screenBrightnessValue')
+  if (output) output.textContent = `${brightness}%`
 }
 
 function setupCanvasEvents(canvas, input) {
@@ -469,9 +492,7 @@ function setupCanvasEvents(canvas, input) {
     input.focus()
   }
 
-  const sendTouchEvent = (action, e) => {
-    if (!state.mirroring || !mirrorWs || mirrorWs.readyState !== 1) return
-
+  const getDevicePosition = e => {
     const rect = canvas.getBoundingClientRect()
     const clientX = e.clientX - rect.left
     const clientY = e.clientY - rect.top
@@ -481,7 +502,7 @@ function setupCanvasEvents(canvas, input) {
     const vw = canvas.width
     const vh = canvas.height
 
-    if (cw === 0 || ch === 0 || vw === 0 || vh === 0) return
+    if (cw === 0 || ch === 0 || vw === 0 || vh === 0) return null
 
     const vr = vw / vh
     const er = cw / ch
@@ -515,21 +536,59 @@ function setupCanvasEvents(canvas, input) {
     const dw = swap ? vh : vw
     const dh = swap ? vw : vh
     const [x, y] = unrotate(rot, cx, cy, dw, dh)
+    const touchX = Math.min(dw - 1, Math.max(0, x))
+    const touchY = Math.min(dh - 1, Math.max(0, y))
+    const viewX = rot === 1 ? vh - 1 - touchY : rot === 2 ? vw - 1 - touchX
+      : rot === 3 ? touchY : touchX
+    const viewY = rot === 1 ? touchX : rot === 2 ? vh - 1 - touchY
+      : rot === 3 ? vw - 1 - touchX : touchY
 
-    // 범위를 벗어나면 버리지 않고 가장자리로 붙인다. 디바이스 밖으로 마우스가 나가도
-    // 스와이프가 중간에 끊기지 않고 이어지게 하기 위함이다.
-    const cx2 = Math.min(dw - 1, Math.max(0, x))
-    const cy2 = Math.min(dh - 1, Math.max(0, y))
-    {
-      mirrorWs.send(JSON.stringify({
-        type: 'touch',
-        action,
-        x: cx2,
-        y: cy2,
-        screenWidth: dw,
-        screenHeight: dh
-      }))
+    return {
+      x: touchX,
+      y: touchY,
+      screenWidth: dw,
+      screenHeight: dh,
+      canvasX: dx + viewX / scale,
+      canvasY: dy + viewY / scale,
     }
+  }
+
+  let touchIndicatorTimer = null
+  const showTouchIndicator = (e, held) => {
+    const position = getDevicePosition(e)
+    if (!position) return
+    const screen = canvas.parentElement
+    let indicator = screen.querySelector('.touch-indicator')
+    if (!indicator) {
+      indicator = document.createElement('span')
+      indicator.className = 'touch-indicator'
+      indicator.setAttribute('aria-hidden', 'true')
+      screen.appendChild(indicator)
+    }
+    const canvasRect = canvas.getBoundingClientRect()
+    const screenRect = screen.getBoundingClientRect()
+    indicator.style.left = `${canvasRect.left - screenRect.left + position.canvasX}px`
+    indicator.style.top = `${canvasRect.top - screenRect.top + position.canvasY}px`
+    indicator.classList.remove('fading')
+    indicator.classList.add('visible')
+    if (touchIndicatorTimer) clearTimeout(touchIndicatorTimer)
+    touchIndicatorTimer = null
+    if (!held) {
+      touchIndicatorTimer = setTimeout(() => {
+        indicator.classList.add('fading')
+        touchIndicatorTimer = setTimeout(() => {
+          indicator.classList.remove('visible', 'fading')
+          touchIndicatorTimer = null
+        }, 180)
+      }, 420)
+    }
+  }
+
+  const sendTouchEvent = (action, e) => {
+    if (!state.mirroring || !mirrorWs || mirrorWs.readyState !== 1) return
+    const position = getDevicePosition(e)
+    if (!position) return
+    mirrorWs.send(JSON.stringify({ type: 'touch', action, ...position }))
   }
 
   canvas.addEventListener('contextmenu', e => e.preventDefault())
@@ -546,6 +605,7 @@ function setupCanvasEvents(canvas, input) {
     if (e.button !== 0) return // 마우스 좌클릭만 처리
     isDown = true
     focusKeyTarget()
+    showTouchIndicator(e, true)
     sendTouchEvent(0, e) // 0 = DOWN
     window.addEventListener('mousemove', onDragMove)
     window.addEventListener('mouseup', onDragEnd)
@@ -553,14 +613,34 @@ function setupCanvasEvents(canvas, input) {
 
   // 드래그 중에는 창 전체에서 이벤트를 받는다. 캔버스에만 걸면 마우스가 디바이스 영역을
   // 벗어나는 순간 move 가 끊겨 스와이프가 중간에 멈춘다. 좌표는 가장자리로 붙는다.
-  const onDragMove = e => { if (isDown) sendTouchEvent(2, e) }   // 2 = MOVE
+  const onDragMove = e => {
+    if (!isDown) return
+    showTouchIndicator(e, true)
+    sendTouchEvent(2, e)
+  }   // 2 = MOVE
   const onDragEnd = e => {
     if (!isDown) return
     isDown = false
+    showTouchIndicator(e, false)
     sendTouchEvent(1, e)                                          // 1 = UP
     window.removeEventListener('mousemove', onDragMove)
     window.removeEventListener('mouseup', onDragEnd)
   }
+
+  canvas.addEventListener('wheel', e => {
+    if (!state.mirroring || !mirrorWs || mirrorWs.readyState !== 1) return
+    e.preventDefault()
+    const position = getDevicePosition(e)
+    if (!position) return
+    const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 1 / 3
+      : e.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 3
+        : 1 / 100
+    const hScroll = Math.max(-16, Math.min(16, -e.deltaX * unit))
+    const vScroll = Math.max(-16, Math.min(16, -e.deltaY * unit))
+    if (hScroll || vScroll) {
+      mirrorWs.send(JSON.stringify({ type: 'scroll', ...position, hScroll, vScroll }))
+    }
+  }, { passive: false })
 
   canvas.addEventListener('click', focusKeyTarget)
 
@@ -760,11 +840,21 @@ function setupCanvasEvents(canvas, input) {
 function resetPhoneScreen() {
   updateMirrorToggle()   // 미러링이 끝나는 모든 경로가 이 함수를 지난다
   activeDevice.screenOff = false
+  activeDevice.viewBrightness = 100
   updateDeviceScreenButton(activeDevice)
   const screen = slotElement(activeDevice, 'phoneScreen')
   if (!screen) return
+  const slot = activeDevice.slot
   screen.innerHTML = `<i class="ti ti-device-mobile-off" data-role="phoneIcon"></i>
-    <p data-role="phoneMsg">${state.serial ? '미러링 시작 버튼을 눌러주세요' : '기기를 연결해 주세요'}</p>`
+    <p data-role="phoneMsg">${state.serial ? '미러링 시작 버튼을 눌러주세요' : '기기를 연결해 주세요'}</p>
+    <div class="screen-brightness" data-role="screenBrightness" hidden>
+      <i class="ti ti-sun-low" aria-hidden="true"></i>
+      <input type="range" min="25" max="200" value="100" aria-label="PC 미러링 화면 밝기"
+        title="PC 미러링 화면 밝기만 조절합니다. 스마트폰 화면에는 영향을 주지 않습니다."
+        oninput="setScreenBrightness('${slot}',this.value)">
+      <output data-role="screenBrightnessValue">100%</output>
+      <i class="ti ti-sun-high" aria-hidden="true"></i>
+    </div>`
 }
 
 function updateDeviceScreenButton(device) {
@@ -1805,6 +1895,7 @@ async function startMirror() {
     window.db.stopMirror(device.serial).catch(error =>
       withActiveDevice(device, () => mirrorLog('미러링 정리 실패: ' + (error.message || String(error)))))
     if (logEl) logEl.textContent += '\n[ERROR] ' + (r.message || '알 수 없는 오류') + '\n'
+    if (r.touchIndicatorError && logEl) logEl.textContent += '[터치 표시] ' + r.touchIndicatorError + '\n'
     showToast('미러링 실패 — 로그 패널 확인', true)
     withActiveDevice(device, updateMirrorToggle)
     return
@@ -1813,6 +1904,7 @@ async function startMirror() {
   withActiveDevice(device, () => {
     setText('statusText', '미러링 중', 'var(--accent2)')
     updateMirrorToggle()
+    if (r.touchIndicatorError) showToast(r.touchIndicatorError, true)
   })
 }
 
@@ -1828,10 +1920,10 @@ async function stopMirror() {
     device.mirroring = false
     resetPhoneScreen()
   })
-  await window.db.stopMirror(serial)
+  const result = await window.db.stopMirror(serial)
   withActiveDevice(device, () => {
     setText('statusText', '연결됨', 'var(--accent2)')
-    showToast('미러링 중지됨')
+    showToast(result.touchIndicatorError || '미러링 중지됨', !!result.touchIndicatorError)
     updateMirrorToggle()
   })
 }
@@ -2212,23 +2304,24 @@ function isExternalFileDrag(dataTransfer) {
   return Array.from(dataTransfer.items || []).some(item => item.kind === 'file')
 }
 
-function acceptExternalFileDrag(e) {
-  if (!isExternalFileDrag(e.dataTransfer)) return
+function acceptDrop(e) {
+  if (!e.dataTransfer) return
   e.preventDefault()
   e.dataTransfer.dropEffect = 'copy'
 }
 
-window.addEventListener('dragenter', acceptExternalFileDrag, true)
-window.addEventListener('dragover', acceptExternalFileDrag, true)
+window.addEventListener('dragenter', acceptDrop, true)
+window.addEventListener('dragover', acceptDrop, true)
 
 window.addEventListener('drop', e => {
-  if (!isExternalFileDrag(e.dataTransfer)) return
+  if (!e.dataTransfer) return
+  const files = Array.from(e.dataTransfer.files || [])
+  if (!files.length && !isExternalFileDrag(e.dataTransfer)) return
   // 전용 드롭 영역은 자체 처리기가 담당한다.
   if (e.target.closest?.('[ondrop]')) return
 
   e.preventDefault()
   e.stopPropagation()
-  const files = [...e.dataTransfer.files]
   if (files.some(f => /\.(apk|xapk)$/i.test(f.name))) {
     handleMirrorDrop(e)
   }

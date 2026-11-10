@@ -80,6 +80,8 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
 
 **클립보드 공유와 키보드 폴백은 별개다.** 미러링 중 PC 클립보드는 500ms 간격으로 확인해 Android와 동기화하고, 기기의 클립보드 메시지는 제어 소켓에서 읽어 PC에 반영한다. scrcpy 시퀀스 번호로 에코를 걸러내며, 텍스트만 지원하고 1MiB를 넘는 텍스트는 무시한다. 키보드 입력 폴백은 기존처럼 scrcpy 클립보드 붙여넣기를 사용한다.
 
+미러링 시작 시 ADB `settings put system show_touches 1` 로 Android 개발자 옵션의 탭 표시를 켠다. 시작 전에 읽어 둔 기존 값을 미러링 중지 또는 앱 종료 시 복원하며, 미러링 표시용 PC 오버레이와는 별개로 Android 자체 화면 및 기기 녹화에 반영된다.
+
 ### 3. 화면 녹화
 
 `adb:record-start` 는 ADB 프로세스가 실행 직후 종료되거나 `spawn`에 실패하면 오류를 반환한다. 녹화 중에는 경과 시간과 STOP 동작을 표시한다. 종료할 때는 기기 `screenrecord`에 SIGINT를 보내 종료가 끝날 때까지 기다린 뒤 저장 대화상자를 띄우고, 저장된 파일 경로를 화면에 계속 보여준다. 최대 녹화 시간은 3분이다. 종료 대기 제한은 15초이며 초과하면 저장 파일이 불완전할 수 있음을 알린다.
@@ -108,7 +110,7 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 - **IPC 를 추가하면 반드시 3곳을 같이 고친다**: `main.js` 의 `ipcMain.handle` → `preload.js` 의 `contextBridge` 노출 → `renderer.js` 의 `window.db.*` 호출. 채널 접두사는 `adb:` / `mirror:` / `proxy:` / `dialog:` / `setup:` / `capture:` / `logcat:` / `jira:` / `app:` / `device:` / `window:`.
 - **메인 → 렌더러 푸시 이벤트(`mirror:log`, `logcat:data`, `logcat:stopped`, `proxy:packet`)는 preload 에서 `removeAllListeners` 후 등록한다.** 재연결마다 리스너가 쌓이면 같은 줄이 여러 번 그려진다.
 - **렌더러에 모듈 시스템이 없다.** `renderer.js` 는 클래식 `<script>` 한 개이고 모든 함수가 전역이며, `index.html` 이 인라인 `onclick="fn()"` 으로 호출한다. UI 동작 추가 = 전역 함수 + onclick. (`src/` 는 CommonJS.) DOM 요소가 없어도 죽지 않도록 `setText()` / `$()` 를 거치는 관행이 있다 — 탭에서 내려간 페이지의 마크업이 그대로 남아 있기 때문이다.
-- **창 최소 크기와 시작 크기는 별개다.** `pickLaunchSize()` 는 화면 작업 영역에 맞춘 시작 크기만 정하고, 창은 최소 `720×450` 까지 줄일 수 있다. `window:set-min-size` 는 필요한 경우 최소 너비를 더 올릴 수 있지만, 시작 크기를 하한으로 삼지 않는다.
+- **창 최소 크기와 시작 크기는 별개다.** `pickLaunchSize()` 는 화면 작업 영역에 맞춘 시작 크기만 정하고, 창은 최소 `720×320` 까지 줄일 수 있다. `window:set-min-size` 는 필요한 경우 최소 너비를 더 올릴 수 있지만, 시작 크기를 하한으로 삼지 않는다.
 - **바이너리 경로는 `resolveBin()` 을 통해서만 얻는다.** `bin/` → macOS/Linux 표준 경로(`/opt/homebrew/bin` 등) → `where`/`which` 순으로 탐색한다. macOS GUI 실행 시 `$PATH` 가 비어 있는 문제 때문에 필요한 로직이다. 패키징 상태에서 `resourcesPath/bin` 이 쓰기 불가면 `userData/bin` 으로 복사 후 전환한다 (`main.js` 상단).
 - **`spawn` 하는 곳에는 `proc.on('error')` 를 반드시 단다.** 핸들러가 없으면 spawn 실패가 처리되지 않은 이벤트로 올라와 메인 프로세스가 통째로 죽는다.
 - UI 설정값은 `localStorage` 에 `db_` 접두사로 저장한다: `db_screen_width`, `db_bitrate`, `db_fps`, `db_theme`, `db_logcat_font`, `db_log_app_only`, `db_tools_collapsed`, `db_jira_draft`, `db_jira_pins`, `db_jira_projects`.

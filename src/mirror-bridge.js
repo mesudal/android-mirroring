@@ -132,6 +132,8 @@ class MirrorBridge {
             const msg = JSON.parse(data)
             if (msg.type === 'touch') {
               this.injectTouch(msg)
+            } else if (msg.type === 'scroll') {
+              this.injectScroll(msg)
             } else if (msg.type === 'keycode') {
               this.injectKeycode(msg)
             } else if (msg.type === 'text') {
@@ -558,6 +560,28 @@ class MirrorBridge {
     }
   }
 
+  injectScroll({ x, y, screenWidth, screenHeight, hScroll, vScroll }) {
+    if (!this.controlSock || this.controlSock.destroyed) return
+
+    const encodeScroll = value =>
+      Math.max(-32768, Math.min(32767, Math.round(Math.max(-16, Math.min(16, value)) * 32768 / 16)))
+    const buf = Buffer.alloc(21)
+    buf.writeUInt8(3, 0) // TYPE_INJECT_SCROLL_EVENT
+    buf.writeInt32BE(x, 1)
+    buf.writeInt32BE(y, 5)
+    buf.writeUInt16BE(screenWidth, 9)
+    buf.writeUInt16BE(screenHeight, 11)
+    buf.writeInt16BE(encodeScroll(hScroll), 13)
+    buf.writeInt16BE(encodeScroll(vScroll), 15)
+    buf.writeInt32BE(0, 17) // buttons
+
+    try {
+      this.controlSock.write(buf)
+    } catch (e) {
+      this.log('스크롤 이벤트 전송 실패: ' + e.message)
+    }
+  }
+
   injectKeycode({ action, keycode }) {
     if (!this.controlSock || this.controlSock.destroyed) return
 
@@ -852,6 +876,21 @@ if (require.main === module) {
   assert.strictEqual(bridge.setScreenPower(true), true)
   assert.deepStrictEqual([...sentScreenPower], [10, 1], '화면 켜기 제어 패킷이 잘못됐다')
   assert.strictEqual(bridge.screenOff, false)
+  let sentScroll
+  bridge.controlSock.write = data => { sentScroll = Buffer.from(data) }
+  bridge.injectScroll({
+    x: 260, y: 1026, screenWidth: 1080, screenHeight: 1920,
+    hScroll: 16, vScroll: -16,
+  })
+  assert.strictEqual(sentScroll.length, 21, '스크롤 제어 패킷 길이가 잘못됐다')
+  assert.strictEqual(sentScroll.readUInt8(0), 3, '스크롤 제어 패킷 유형이 잘못됐다')
+  assert.strictEqual(sentScroll.readInt32BE(1), 260)
+  assert.strictEqual(sentScroll.readInt32BE(5), 1026)
+  assert.strictEqual(sentScroll.readUInt16BE(9), 1080)
+  assert.strictEqual(sentScroll.readUInt16BE(11), 1920)
+  assert.strictEqual(sentScroll.readInt16BE(13), 32767)
+  assert.strictEqual(sentScroll.readInt16BE(15), -32768)
+  assert.strictEqual(sentScroll.readInt32BE(17), 0)
   bridge.controlSock.write = data => { sentClipboard = Buffer.from(data) }
   const echo = Buffer.from(deviceClipboard)
   echo.writeBigUInt64BE(1n, 1)
@@ -861,5 +900,5 @@ if (require.main === module) {
   assert.strictEqual(sentClipboard.readBigUInt64BE(1), 2n)
   assert.strictEqual(sentClipboard.readUInt8(9), 1, '키보드 폴백에서 붙여넣기가 실행되지 않았다')
 
-  console.log('mirror-bridge 자가진단 통과 — session_meta·클립보드·화면 전원 프로토콜')
+  console.log('mirror-bridge 자가진단 통과 — session_meta·클립보드·화면 전원·스크롤 프로토콜')
 }
