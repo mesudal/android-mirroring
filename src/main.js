@@ -91,6 +91,7 @@ let proxyServer = null
 let certManager = null
 let updateCheckInProgress = false
 let manualUpdateCheck = false
+let latestUpdateStatus = null
 
 // 미러링 로그를 파일로도 남긴다. 사용자가 "안 된다"고 할 때 이 파일 하나면 원인이
 // 잡힌다. 앱 시작마다 비우므로 한 세션치를 넘어 자라지 않는다.
@@ -104,6 +105,7 @@ function logMirror(msg, serial = null) {
 }
 
 function sendUpdateStatus(status) {
+  latestUpdateStatus = status
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.webContents.send('app:update-status', status)
 }
@@ -250,6 +252,9 @@ function createWindow() {
     event.preventDefault()
     mainWindow?.setTitle(`안드로이드 미러링 v${app.getVersion()}`)
   })
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (latestUpdateStatus) sendUpdateStatus(latestUpdateStatus)
+  })
 
   // 상단 메뉴바(File/Edit/View/…)를 화면에서만 감춘다. 메뉴 자체는 살아 있어서
   // Ctrl+R(새로고침) 같은 기본 단축키는 그대로 동작한다.
@@ -271,7 +276,7 @@ app.whenReady().then(() => {
   setupAutoUpdater()
   createWindow()
   if (app.isPackaged && platform === 'win32' && !isDev) {
-    mainWindow.webContents.once('did-finish-load', () => { startUpdateCheck(false) })
+    startUpdateCheck(false)
   }
 })
 app.on('window-all-closed', () => { if (platform !== 'darwin') app.quit() })
