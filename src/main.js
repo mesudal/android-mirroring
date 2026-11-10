@@ -10,8 +10,8 @@ const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
 
 const WINDOW_PREFERENCES = path.join(app.getPath('userData'), 'window-preferences.json')
-const MIN_WINDOW_WIDTH = 900
-const MIN_WINDOW_HEIGHT = 600
+const MIN_WINDOW_WIDTH = 720
+const MIN_WINDOW_HEIGHT = 450
 
 function isAlwaysOnTopPreferenceEnabled() {
   try {

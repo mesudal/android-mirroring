@@ -108,7 +108,7 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 - **IPC 를 추가하면 반드시 3곳을 같이 고친다**: `main.js` 의 `ipcMain.handle` → `preload.js` 의 `contextBridge` 노출 → `renderer.js` 의 `window.db.*` 호출. 채널 접두사는 `adb:` / `mirror:` / `proxy:` / `dialog:` / `setup:` / `capture:` / `logcat:` / `jira:` / `app:` / `device:` / `window:`.
 - **메인 → 렌더러 푸시 이벤트(`mirror:log`, `logcat:data`, `logcat:stopped`, `proxy:packet`)는 preload 에서 `removeAllListeners` 후 등록한다.** 재연결마다 리스너가 쌓이면 같은 줄이 여러 번 그려진다.
 - **렌더러에 모듈 시스템이 없다.** `renderer.js` 는 클래식 `<script>` 한 개이고 모든 함수가 전역이며, `index.html` 이 인라인 `onclick="fn()"` 으로 호출한다. UI 동작 추가 = 전역 함수 + onclick. (`src/` 는 CommonJS.) DOM 요소가 없어도 죽지 않도록 `setText()` / `$()` 를 거치는 관행이 있다 — 탭에서 내려간 페이지의 마크업이 그대로 남아 있기 때문이다.
-- **창 최소 크기와 시작 크기는 별개다.** `pickLaunchSize()` 는 화면 작업 영역에 맞춘 시작 크기만 정하고, 창은 최소 `900×600` 까지 줄일 수 있다. `window:set-min-size` 는 필요한 경우 최소 너비를 더 올릴 수 있지만, 시작 크기를 하한으로 삼지 않는다.
+- **창 최소 크기와 시작 크기는 별개다.** `pickLaunchSize()` 는 화면 작업 영역에 맞춘 시작 크기만 정하고, 창은 최소 `720×450` 까지 줄일 수 있다. `window:set-min-size` 는 필요한 경우 최소 너비를 더 올릴 수 있지만, 시작 크기를 하한으로 삼지 않는다.
 - **바이너리 경로는 `resolveBin()` 을 통해서만 얻는다.** `bin/` → macOS/Linux 표준 경로(`/opt/homebrew/bin` 등) → `where`/`which` 순으로 탐색한다. macOS GUI 실행 시 `$PATH` 가 비어 있는 문제 때문에 필요한 로직이다. 패키징 상태에서 `resourcesPath/bin` 이 쓰기 불가면 `userData/bin` 으로 복사 후 전환한다 (`main.js` 상단).
 - **`spawn` 하는 곳에는 `proc.on('error')` 를 반드시 단다.** 핸들러가 없으면 spawn 실패가 처리되지 않은 이벤트로 올라와 메인 프로세스가 통째로 죽는다.
 - UI 설정값은 `localStorage` 에 `db_` 접두사로 저장한다: `db_screen_width`, `db_bitrate`, `db_fps`, `db_theme`, `db_logcat_font`, `db_log_app_only`, `db_tools_collapsed`, `db_jira_draft`, `db_jira_pins`, `db_jira_projects`.
