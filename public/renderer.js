@@ -604,6 +604,16 @@ function setupCanvasEvents(canvas, input) {
     isDown = true
     focusKeyTarget()
     showTouchIndicator(e, true)
+    const position = getDevicePosition(e)
+    if (device.serial && position) {
+      window.db.recordTouch({
+        serial: device.serial,
+        x: position.x,
+        y: position.y,
+        screenWidth: position.screenWidth,
+        screenHeight: position.screenHeight,
+      })
+    }
     sendTouchEvent(0, e) // 0 = DOWN
     window.addEventListener('mousemove', onDragMove)
     window.addEventListener('mouseup', onDragEnd)
@@ -1477,6 +1487,11 @@ window.db.onRecordEnded((status, serial) => {
   const device = deviceSlots.find(slot => slot.serial === serial)
   if (device?.recording) withActiveDevice(device, () => finishRecording(status.message || '기기 녹화가 예기치 않게 종료되었습니다'))
 })
+window.db.onRecordOverlayProgress((serial, percent) => {
+  const device = deviceSlots.find(slot => slot.serial === serial)
+  if (device) withActiveDevice(device, () =>
+    setRecordingStatus('saving', `터치 링 합성 중 · ${percent}%`))
+})
 let updateDialogState = 'idle'
 let pendingUpdateVersion = ''
 
@@ -1890,7 +1905,6 @@ async function startMirror() {
     window.db.stopMirror(device.serial).catch(error =>
       withActiveDevice(device, () => mirrorLog('미러링 정리 실패: ' + (error.message || String(error)))))
     if (logEl) logEl.textContent += '\n[ERROR] ' + (r.message || '알 수 없는 오류') + '\n'
-    if (r.touchIndicatorError && logEl) logEl.textContent += '[터치 표시] ' + r.touchIndicatorError + '\n'
     showToast('미러링 실패 — 로그 패널 확인', true)
     withActiveDevice(device, updateMirrorToggle)
     return
@@ -1899,7 +1913,6 @@ async function startMirror() {
   withActiveDevice(device, () => {
     setText('statusText', '미러링 중', 'var(--accent2)')
     updateMirrorToggle()
-    if (r.touchIndicatorError) showToast(r.touchIndicatorError, true)
   })
 }
 
@@ -1918,7 +1931,7 @@ async function stopMirror() {
   const result = await window.db.stopMirror(serial)
   withActiveDevice(device, () => {
     setText('statusText', '연결됨', 'var(--accent2)')
-    showToast(result.touchIndicatorError || '미러링 중지됨', !!result.touchIndicatorError)
+    showToast('미러링 중지됨')
     updateMirrorToggle()
   })
 }
@@ -2193,8 +2206,9 @@ async function finishRecording(reason) {
   try {
     const r = await window.db.recordStop(serial)
     if (r.ok) {
-      withActiveDevice(device, () => setRecordingStatus('saved', '녹화 저장 완료', r.path))
-      showToast('녹화 저장 완료: ' + r.path)
+      const status = r.warning ? `녹화 저장 완료 · ${r.warning}` : '녹화 저장 완료'
+      withActiveDevice(device, () => setRecordingStatus('saved', status, r.path))
+      showToast(r.warning || '녹화 저장 완료: ' + r.path, !!r.warning)
     } else if (r.canceled) {
       withActiveDevice(device, () => setRecordingStatus('canceled', '저장을 취소했습니다. 녹화본은 기기에 임시 보관되어 있습니다.'))
       showToast('녹화 저장을 취소했습니다', true)

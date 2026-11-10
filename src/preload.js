@@ -28,9 +28,14 @@ contextBridge.exposeInMainWorld('db', {
   setMinSize: (w, h) => ipcRenderer.invoke('window:set-min-size', w, h),
   recordStart: (opts) => ipcRenderer.invoke('adb:record-start', opts),
   recordStop: (serial) => ipcRenderer.invoke('adb:record-stop', serial),
+  recordTouch: (event) => ipcRenderer.send('adb:record-touch', event),
   onRecordEnded: (cb) => {
     ipcRenderer.removeAllListeners('adb:record-ended')
     ipcRenderer.on('adb:record-ended', (_, status, serial) => cb(status, serial))
+  },
+  onRecordOverlayProgress: (cb) => {
+    ipcRenderer.removeAllListeners('adb:record-overlay-progress')
+    ipcRenderer.on('adb:record-overlay-progress', (_, serial, percent) => cb(serial, percent))
   },
 
   // APK / 파일

@@ -5,15 +5,15 @@ const { spawn, execFile, execSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
+const { overlayRecording, MAX_TOUCHES } = require('./recording-overlay')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
+const ffmpegStaticPath = require('ffmpeg-static')
 
 const WINDOW_PREFERENCES = path.join(app.getPath('userData'), 'window-preferences.json')
 const MIN_WINDOW_WIDTH = 720
 const MIN_WINDOW_HEIGHT = 320
-const touchIndicatorStates = new Map()
-let quittingAfterTouchIndicatorRestore = false
 
 function isAlwaysOnTopPreferenceEnabled() {
   try {
@@ -86,6 +86,7 @@ let adbPath = resolveBin(adbBin)
 let mainWindow = null
 const mirrors = new Map()   // 기기 serial 별 MirrorBridge
 const recordingProcesses = new Map()
+const recordingSessions = new Map()
 const recordingStopping = new Set()
 let clipboardPollTimer = null
 let lastDesktopClipboard = null
@@ -278,16 +279,6 @@ app.whenReady().then(() => {
 })
 app.on('window-all-closed', () => { if (platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (!mainWindow) createWindow() })
-app.on('before-quit', event => {
-  if (quittingAfterTouchIndicatorRestore || touchIndicatorStates.size === 0) return
-  event.preventDefault()
-  Promise.all([...touchIndicatorStates.keys()].map(restoreTouchIndicator))
-    .finally(() => {
-      quittingAfterTouchIndicatorRestore = true
-      app.quit()
-    })
-})
-
 ipcMain.handle('app:update-check', () => startUpdateCheck(true))
 ipcMain.handle('app:update-download', async () => {
   if (!app.isPackaged || platform !== 'win32' || isDev) {
@@ -335,37 +326,6 @@ function runAdb(args) {
   })
 }
 
-async function enableTouchIndicator(serial) {
-  if (touchIndicatorStates.has(serial)) return { ok: true }
-  try {
-    const current = await runAdb(['-s', serial, 'shell', 'settings', 'get', 'system', 'show_touches'])
-    const original = current && current !== 'null' ? current : null
-    touchIndicatorStates.set(serial, original)
-    if (original !== '1') await runAdb(['-s', serial, 'shell', 'settings', 'put', 'system', 'show_touches', '1'])
-    return { ok: true }
-  } catch (error) {
-    return { ok: false, message: `Android 탭 표시를 켜지 못했습니다: ${String(error)}` }
-  }
-}
-
-async function restoreTouchIndicator(serial) {
-  if (!touchIndicatorStates.has(serial)) return { ok: true }
-  const original = touchIndicatorStates.get(serial)
-  try {
-    if (original === null) {
-      await runAdb(['-s', serial, 'shell', 'settings', 'delete', 'system', 'show_touches'])
-    } else {
-      await runAdb(['-s', serial, 'shell', 'settings', 'put', 'system', 'show_touches', original])
-    }
-    touchIndicatorStates.delete(serial)
-    return { ok: true }
-  } catch (error) {
-    const message = `Android 탭 표시 설정을 복원하지 못했습니다: ${String(error)}`
-    try { fs.appendFileSync(MIRROR_LOG, `${new Date().toISOString()} ${message}\n`) } catch { }
-    return { ok: false, message }
-  }
-}
-
 // ── IPC 핸들러들 ──────────────────────────────────────────────
 
 // 기기 목록
@@ -404,21 +364,13 @@ ipcMain.handle('adb:disconnect', async (_, target) => {
 
 // ── 미러링 IPC (MirrorBridge 사용) ────────────────────────────
 ipcMain.handle('mirror:start', async (_, { serial, maxSize, videoBitrate, fps }) => {
-  let touchIndicatorError = null
   try {
     adbPath = resolveBin(adbBin) // 재탐색 (setup 이후 변경 대응)
-    const touchIndicator = await enableTouchIndicator(serial)
-    if (!touchIndicator.ok) touchIndicatorError = touchIndicator.message
     await getMirror(serial).start({ serial, maxSize, videoBitrate, fps })
     if (!clipboardPollTimer) startDesktopClipboardSync()
-    return { ok: true, touchIndicatorError }
+    return { ok: true }
   } catch (e) {
-    const restored = await restoreTouchIndicator(serial)
-    return {
-      ok: false,
-      message: e.message,
-      touchIndicatorError: restored.ok ? touchIndicatorError : restored.message,
-    }
+    return { ok: false, message: e.message }
   }
 })
 
@@ -427,8 +379,7 @@ ipcMain.handle('mirror:stop', async (_, serial) => {
   await bridge?.stop()
   if (bridge) mirrors.delete(serial)
   if (![...mirrors.values()].some(item => item.running)) stopDesktopClipboardSync()
-  const touchIndicator = await restoreTouchIndicator(serial)
-  return { ok: true, touchIndicatorError: touchIndicator.ok ? null : touchIndicator.message }
+  return { ok: true }
 })
 
 ipcMain.handle('mirror:init', async (_, serial) => {
@@ -631,6 +582,35 @@ ipcMain.handle('window:set-min-size', (_, width) => {
 
 // 녹화 시작. ADB 프로세스가 즉시 종료되면 시작 실패로 보고, 실제로 살아 있는지 확인한 뒤
 // 성공을 반환한다. screenrecord 는 동작 중 별도 출력을 내지 않으므로 잠시 생존 여부를 본다.
+ipcMain.on('adb:record-touch', (_, event) => {
+  const session = recordingSessions.get(event?.serial)
+  if (!session?.startedAt) return
+  const { x, y, screenWidth, screenHeight } = event
+  if (![x, y, screenWidth, screenHeight].every(Number.isFinite) ||
+      screenWidth <= 0 || screenHeight <= 0 || x < 0 || y < 0 ||
+      x >= screenWidth || y >= screenHeight) return
+  if (session.touches.length >= MAX_TOUCHES) {
+    session.droppedTouches++
+    return
+  }
+  session.touches.push({
+    time: (Date.now() - session.startedAt) / 1000,
+    x: x / screenWidth,
+    y: y / screenHeight,
+  })
+})
+
+function sendRecordingOverlayProgress(serial, percent) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('adb:record-overlay-progress', serial, percent)
+}
+
+function getFfmpegPath() {
+  if (!app.isPackaged) return ffmpegStaticPath
+  return path.join(process.resourcesPath, 'app.asar.unpacked', 'node_modules',
+    'ffmpeg-static', path.basename(ffmpegStaticPath))
+}
+
 ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
   if (recordingProcesses.has(serial)) return { ok: false, message: '이미 녹화 중입니다' }
   if (!adbPath) return { ok: false, message: 'adb 를 찾을 수 없습니다' }
@@ -651,6 +631,7 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
       return
     }
     recordingProcesses.set(serial, proc)
+    recordingSessions.set(serial, { startedAt: null, touches: [], droppedTouches: 0 })
     recordingStopping.delete(serial)
     const finishStart = result => {
       if (!startupTimer) return
@@ -663,6 +644,7 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
     proc.stderr.on('data', collect)
     proc.on('error', error => {
       if (recordingProcesses.get(serial) === proc) recordingProcesses.delete(serial)
+      if (!started) recordingSessions.delete(serial)
       finishStart({ ok: false, message: `adb 녹화 실행 실패: ${error.message}` })
       if (started && !recordingStopping.has(serial)) {
         mainWindow?.webContents.send('adb:record-ended', { message: error.message }, serial)
@@ -671,6 +653,7 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
     proc.on('close', code => {
       if (recordingProcesses.get(serial) === proc) recordingProcesses.delete(serial)
       if (!started) {
+        recordingSessions.delete(serial)
         finishStart({
           ok: false,
           message: output.trim() || `녹화를 시작하지 못했습니다 (종료 코드 ${code})`,
@@ -683,6 +666,8 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
     })
     startupTimer = setTimeout(() => {
       started = true
+      const session = recordingSessions.get(serial)
+      if (session) session.startedAt = Date.now()
       finishStart({ ok: true })
     }, 800)
   })
@@ -703,6 +688,7 @@ function waitRecordingExit(serial, timeoutMs = 15000) {
 
 // 녹화 중지 + 저장
 ipcMain.handle('adb:record-stop', async (_, serial) => {
+  const session = recordingSessions.get(serial)
   try {
     recordingStopping.add(serial)
     // 기기에서 실행 중인 screenrecord 프로세스에 SIGINT 전송 (정상 종료 → 파일 무결성 보장)
@@ -716,11 +702,47 @@ ipcMain.handle('adb:record-stop', async (_, serial) => {
       filters: [{ name: 'MP4', extensions: ['mp4'] }],
     })
     if (!filePath) return { ok: false, canceled: true }
-    await runAdb(['-s', serial, 'pull', '/sdcard/_db_rec.mp4', filePath])
-    await runAdb(['-s', serial, 'shell', 'rm', '/sdcard/_db_rec.mp4'])
-    return { ok: true, path: filePath }
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'droidbridge-recording-'))
+    const sourcePath = path.join(tempDir, 'recording.mp4')
+    const filterPath = path.join(tempDir, 'touch-overlay.txt')
+    try {
+      await runAdb(['-s', serial, 'pull', '/sdcard/_db_rec.mp4', sourcePath])
+      await runAdb(['-s', serial, 'shell', 'rm', '/sdcard/_db_rec.mp4'])
+      let warning = null
+      if (session?.touches.length) {
+        try {
+          const ffmpegPath = getFfmpegPath()
+          if (!ffmpegPath || !fs.existsSync(ffmpegPath)) throw new Error('FFmpeg를 찾을 수 없습니다')
+          sendRecordingOverlayProgress(serial, 0)
+          await overlayRecording({
+            ffmpegPath,
+            inputPath: sourcePath,
+            outputPath: filePath,
+            filterPath,
+            touches: session.touches,
+            duration: Math.max(0.1, (Date.now() - session.startedAt) / 1000),
+            onProgress: percent => sendRecordingOverlayProgress(serial, percent),
+          })
+        } catch (error) {
+          fs.copyFileSync(sourcePath, filePath)
+          warning = `터치 링 합성에 실패해 원본 영상으로 저장했습니다: ${error.message}`
+          logMirror(`[녹화] ${warning}`)
+        }
+      } else {
+        fs.copyFileSync(sourcePath, filePath)
+      }
+      if (session?.droppedTouches) {
+        warning = [warning, `터치가 많아 ${session.touches.length}개까지만 표시했습니다`].filter(Boolean).join(' · ')
+      }
+      return { ok: true, path: filePath, warning }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    }
   } catch (e) { return { ok: false, message: String(e) } }
-  finally { recordingStopping.delete(serial) }
+  finally {
+    recordingStopping.delete(serial)
+    recordingSessions.delete(serial)
+  }
 })
 
 // APK 선택 다이얼로그
