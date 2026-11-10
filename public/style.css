@@ -448,10 +448,10 @@ body { overflow:hidden; }
   opacity:0; transform:scale(.55); pointer-events:none; transition:opacity .12s,transform .12s; }
 .touch-indicator.visible { opacity:1; transform:scale(1); }
 .touch-indicator.fading { opacity:0; transform:scale(1.35); }
-.screen-brightness { position:absolute; z-index:2; left:50%; bottom:8px; transform:translateX(-50%);
-  width:min(220px,calc(100% - 24px)); display:flex; align-items:center; gap:6px; padding:4px 8px;
-  border:1px solid rgba(255,255,255,.2); border-radius:999px; background:rgba(0,0,0,.72);
-  color:#fff; font-size:14px; opacity:.82; transition:opacity .15s; }
+.screen-brightness { align-self:center; flex:0 0 auto; width:min(280px,100%);
+  display:flex; align-items:center; gap:8px; padding:4px 10px;
+  border:1px solid var(--border); border-radius:999px; background:var(--surface2);
+  color:var(--muted); font-size:14px; }
 .screen-brightness:hover, .screen-brightness:focus-within { opacity:1; }
 .screen-brightness[hidden] { display:none; }
 .screen-brightness input { flex:1; min-width:0; height:18px; margin:0; accent-color:#fff; cursor:pointer; }

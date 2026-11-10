@@ -443,7 +443,6 @@ function getMirrorCanvas() {
   if (!screen) return null
   let c = screen.querySelector('canvas')
   if (!c) {
-    const brightness = screen.querySelector('[data-role="screenBrightness"]')
     screen.replaceChildren()
     c = document.createElement('canvas')
     c.dataset.role = 'mirrorCanvas'
@@ -459,7 +458,6 @@ function getMirrorCanvas() {
 
     screen.appendChild(c)
     screen.appendChild(input)
-    if (brightness) screen.appendChild(brightness)
   }
   return c
 }
@@ -842,19 +840,16 @@ function resetPhoneScreen() {
   activeDevice.screenOff = false
   activeDevice.viewBrightness = 100
   updateDeviceScreenButton(activeDevice)
+  const brightness = slotElement(activeDevice, 'screenBrightness')
+  if (brightness) brightness.hidden = !activeDevice.serial
+  const brightnessInput = brightness?.querySelector('input[type="range"]')
+  const brightnessValue = slotElement(activeDevice, 'screenBrightnessValue')
+  if (brightnessInput) brightnessInput.value = '100'
+  if (brightnessValue) brightnessValue.textContent = '100%'
   const screen = slotElement(activeDevice, 'phoneScreen')
   if (!screen) return
-  const slot = activeDevice.slot
   screen.innerHTML = `<i class="ti ti-device-mobile-off" data-role="phoneIcon"></i>
-    <p data-role="phoneMsg">${state.serial ? '미러링 시작 버튼을 눌러주세요' : '기기를 연결해 주세요'}</p>
-    <div class="screen-brightness" data-role="screenBrightness" hidden>
-      <i class="ti ti-sun-low" aria-hidden="true"></i>
-      <input type="range" min="25" max="200" value="100" aria-label="PC 미러링 화면 밝기"
-        title="PC 미러링 화면 밝기만 조절합니다. 스마트폰 화면에는 영향을 주지 않습니다."
-        oninput="setScreenBrightness('${slot}',this.value)">
-      <output data-role="screenBrightnessValue">100%</output>
-      <i class="ti ti-sun-high" aria-hidden="true"></i>
-    </div>`
+    <p data-role="phoneMsg">${state.serial ? '미러링 시작 버튼을 눌러주세요' : '기기를 연결해 주세요'}</p>`
 }
 
 function updateDeviceScreenButton(device) {
