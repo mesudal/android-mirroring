@@ -8,6 +8,7 @@ function createDeviceState(slot) {
     viewRot: 0,
     mirroring: false,
     recording: false,
+    screenOff: false,
     recordBusy: false,
     timerInterval: null,
     activityInterval: null,
@@ -758,10 +759,38 @@ function setupCanvasEvents(canvas, input) {
 
 function resetPhoneScreen() {
   updateMirrorToggle()   // 미러링이 끝나는 모든 경로가 이 함수를 지난다
+  activeDevice.screenOff = false
+  updateDeviceScreenButton(activeDevice)
   const screen = slotElement(activeDevice, 'phoneScreen')
   if (!screen) return
   screen.innerHTML = `<i class="ti ti-device-mobile-off" data-role="phoneIcon"></i>
     <p data-role="phoneMsg">${state.serial ? '미러링 시작 버튼을 눌러주세요' : '기기를 연결해 주세요'}</p>`
+}
+
+function updateDeviceScreenButton(device) {
+  const button = slotElement(device, 'screenPowerButton')
+  if (!button) return
+  button.classList.toggle('active', device.screenOff)
+  button.setAttribute('aria-pressed', String(device.screenOff))
+  button.title = device.screenOff ? '스마트폰 화면 켜기' : '스마트폰 화면 끄기'
+  button.innerHTML = `<i class="ti ${device.screenOff ? 'ti-device-mobile-off' : 'ti-device-mobile'}"></i>`
+}
+
+function toggleDeviceScreen() {
+  if (!state.mirroring || !mirrorWs || mirrorWs.readyState !== WebSocket.OPEN) {
+    showToast('화면 전원 제어는 미러링 중에만 사용할 수 있습니다', true)
+    return
+  }
+  const device = activeDevice
+  const on = device.screenOff
+  try {
+    mirrorWs.send(JSON.stringify({ type: 'screenPower', on }))
+    device.screenOff = !on
+    updateDeviceScreenButton(device)
+    showToast(on ? '스마트폰 화면을 켰습니다' : '스마트폰 화면을 끄고 PC에서 계속 조작할 수 있습니다')
+  } catch (error) {
+    showToast(`화면 전원 요청을 보내지 못했습니다: ${error.message}`, true)
+  }
 }
 
 // ── 로그 유틸 ──────────────────────────────────────────────────
@@ -1714,6 +1743,8 @@ function connectMirrorWs(canvas, wsPort, session) {
       mirrorWs = null
       state.mirroring = false
       resetPhoneScreen()
+      window.db.stopMirror(device.serial).catch(error =>
+        withActiveDevice(device, () => mirrorLog('미러링 정리 실패: ' + (error.message || String(error)))))
     })
   }
 
@@ -2174,14 +2205,24 @@ function handleMirrorDrop(e) {
 
 // Electron 은 dragover 를 취소한 영역에서만 파일 드롭을 허용한다.
 // 기기 화면 밖에서도 APK 를 앱 창에 놓을 수 있도록 창 전체의 파일 드래그를 수락한다.
-window.addEventListener('dragover', e => {
-  if (!Array.from(e.dataTransfer.types).includes('Files')) return
+function isExternalFileDrag(dataTransfer) {
+  if (!dataTransfer) return false
+  const types = Array.from(dataTransfer.types || [], type => String(type).toLowerCase())
+  if (types.includes('files') || types.includes('application/x-moz-file')) return true
+  return Array.from(dataTransfer.items || []).some(item => item.kind === 'file')
+}
+
+function acceptExternalFileDrag(e) {
+  if (!isExternalFileDrag(e.dataTransfer)) return
   e.preventDefault()
   e.dataTransfer.dropEffect = 'copy'
-}, true)
+}
+
+window.addEventListener('dragenter', acceptExternalFileDrag, true)
+window.addEventListener('dragover', acceptExternalFileDrag, true)
 
 window.addEventListener('drop', e => {
-  if (!Array.from(e.dataTransfer.types).includes('Files')) return
+  if (!isExternalFileDrag(e.dataTransfer)) return
   // 전용 드롭 영역은 자체 처리기가 담당한다.
   if (e.target.closest?.('[ondrop]')) return
 
@@ -2482,6 +2523,35 @@ function setTheme(theme) {
   localStorage.setItem('db_theme', selected)
   showToast(`화면 테마가 ${APP_THEME_NAMES[selected]}로 변경되었습니다`)
 }
+
+function updateAlwaysOnTopButton(enabled) {
+  const button = $('alwaysOnTopButton')
+  if (!button) return
+  button.classList.toggle('active', enabled)
+  button.setAttribute('aria-pressed', String(enabled))
+  button.title = enabled ? '항상 위 고정 해제' : '항상 위 고정'
+  button.innerHTML = `<i class="ti ${enabled ? 'ti-pinned' : 'ti-pin'}"></i>항상 위`
+}
+
+async function toggleAlwaysOnTop() {
+  const button = $('alwaysOnTopButton')
+  const enabled = button?.getAttribute('aria-pressed') !== 'true'
+  try {
+    const result = await window.db.setAlwaysOnTop(enabled)
+    if (!result.ok) {
+      showToast(result.message || '항상 위 설정을 변경하지 못했습니다', true)
+      return
+    }
+    updateAlwaysOnTopButton(result.enabled)
+    showToast(result.enabled ? '창을 항상 위에 표시합니다' : '항상 위 고정을 해제했습니다')
+  } catch (error) {
+    showToast(`항상 위 설정을 변경하지 못했습니다: ${error.message}`, true)
+  }
+}
+
+window.db.getAlwaysOnTop().then(updateAlwaysOnTopButton).catch(error => {
+  console.warn('항상 위 설정을 불러오지 못했습니다:', error)
+})
 
 // 단말의 물리 키보드 레이아웃 설정 화면을 연다. UHID 최초 사용 시 1회 필요하다.
 function openKeyboardSettings() {

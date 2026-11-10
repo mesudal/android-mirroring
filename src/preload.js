@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('db', {
   openApkDialog: () => ipcRenderer.invoke('dialog:openApk'),
   openFileDialog: () => ipcRenderer.invoke('dialog:openFile'),
   openVideoDialog: () => ipcRenderer.invoke('dialog:openVideo'),
+  getAlwaysOnTop: () => ipcRenderer.invoke('window:get-always-on-top'),
+  setAlwaysOnTop: (enabled) => ipcRenderer.invoke('window:set-always-on-top', enabled),
   install: (opts) => ipcRenderer.invoke('adb:install', opts),
   patchAndInstallApk: (serial) => ipcRenderer.invoke('proxy:patch-and-install-apk', serial),
 

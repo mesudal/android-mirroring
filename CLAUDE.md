@@ -70,7 +70,7 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
 
 ### 2. 입력 주입 (터치 / 키 / 텍스트)
 
-렌더러가 JSON 으로 WS 에 보내면 브리지가 scrcpy 제어 패킷으로 바꿔 쓴다 (`injectTouch` 32B / `injectKeycode` 14B / `uhidInput` / `injectText`).
+렌더러가 JSON 으로 WS 에 보내면 브리지가 scrcpy 제어 패킷으로 바꿔 쓴다 (`injectTouch` 32B / `injectKeycode` 14B / `uhidInput` / `injectText`). 화면 전원은 scrcpy `TYPE_SET_DISPLAY_POWER(10)` 으로 제어하며, 화면을 끈 채 입력을 계속 받고 미러링 종료 시 다시 켠다.
 
 - **좌표는 렌더러에서 기기 픽셀로 환산해서 보낸다.** `sendTouchEvent()` 가 letterbox/pillarbox 여백과 보기 회전을 빼고 역산하므로, 캔버스 크기 로직을 건드리면 터치 정확도가 같이 깨진다.
 - **키보드는 UHID 가 기본, 클립보드가 폴백이다.** 브리지가 시작 시 `/dev/uhid` 접근 가능 여부로 판정해(`keyboardMode`) WS 메시지로 렌더러에 알려준다. 서버 로그에 UHID 오류가 뒤늦게 보이면 런타임에 클립보드로 되돌린다.
@@ -108,7 +108,7 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 - **IPC 를 추가하면 반드시 3곳을 같이 고친다**: `main.js` 의 `ipcMain.handle` → `preload.js` 의 `contextBridge` 노출 → `renderer.js` 의 `window.db.*` 호출. 채널 접두사는 `adb:` / `mirror:` / `proxy:` / `dialog:` / `setup:` / `capture:` / `logcat:` / `jira:` / `app:` / `device:` / `window:`.
 - **메인 → 렌더러 푸시 이벤트(`mirror:log`, `logcat:data`, `logcat:stopped`, `proxy:packet`)는 preload 에서 `removeAllListeners` 후 등록한다.** 재연결마다 리스너가 쌓이면 같은 줄이 여러 번 그려진다.
 - **렌더러에 모듈 시스템이 없다.** `renderer.js` 는 클래식 `<script>` 한 개이고 모든 함수가 전역이며, `index.html` 이 인라인 `onclick="fn()"` 으로 호출한다. UI 동작 추가 = 전역 함수 + onclick. (`src/` 는 CommonJS.) DOM 요소가 없어도 죽지 않도록 `setText()` / `$()` 를 거치는 관행이 있다 — 탭에서 내려간 페이지의 마크업이 그대로 남아 있기 때문이다.
-- **레이아웃 상수가 CSS 와 JS 양쪽에 있다.** `renderer.js` 의 `LOGCAT_MIN_WIDTH(720)` / `TOOL_WIDTH(290)` / `TOOL_COLLAPSED_WIDTH(18)` / `LAYOUT_GAP` / `LAYOUT_PAD` 는 `style.css` 값을 그대로 옮겨 적은 것이고, 이 합으로 `window:set-min-size` 최소 창 너비를 계산한다. 한쪽만 고치면 마지막 컬럼이 잘린다. 단 **창 최소 크기의 하한은 실행 시 크기**다(`pickLaunchSize()` — 가로·세로 모두). 렌더러가 보내는 값은 그 하한을 **올리기만** 하고(디바이스가 넓을 때), 최소 높이는 아예 건드리지 않는다.
+- **창 최소 크기와 시작 크기는 별개다.** `pickLaunchSize()` 는 화면 작업 영역에 맞춘 시작 크기만 정하고, 창은 최소 `900×600` 까지 줄일 수 있다. `window:set-min-size` 는 필요한 경우 최소 너비를 더 올릴 수 있지만, 시작 크기를 하한으로 삼지 않는다.
 - **바이너리 경로는 `resolveBin()` 을 통해서만 얻는다.** `bin/` → macOS/Linux 표준 경로(`/opt/homebrew/bin` 등) → `where`/`which` 순으로 탐색한다. macOS GUI 실행 시 `$PATH` 가 비어 있는 문제 때문에 필요한 로직이다. 패키징 상태에서 `resourcesPath/bin` 이 쓰기 불가면 `userData/bin` 으로 복사 후 전환한다 (`main.js` 상단).
 - **`spawn` 하는 곳에는 `proc.on('error')` 를 반드시 단다.** 핸들러가 없으면 spawn 실패가 처리되지 않은 이벤트로 올라와 메인 프로세스가 통째로 죽는다.
 - UI 설정값은 `localStorage` 에 `db_` 접두사로 저장한다: `db_screen_width`, `db_bitrate`, `db_fps`, `db_theme`, `db_logcat_font`, `db_log_app_only`, `db_tools_collapsed`, `db_jira_draft`, `db_jira_pins`, `db_jira_projects`.

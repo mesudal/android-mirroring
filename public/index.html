@@ -14,6 +14,8 @@
   <header class="dual-topbar">
     <div class="logo"><span class="logo-dot"></span>DroidBridge <small>기기 분할 보기 · 최대 3대</small></div>
     <div class="nav-spacer"></div>
+    <button class="btn-sm" id="alwaysOnTopButton" onclick="toggleAlwaysOnTop()" aria-pressed="false"
+      title="항상 위 고정"><i class="ti ti-pin"></i>항상 위</button>
     <button class="btn-sm" id="deviceAddButton" onclick="addDevicePanel()">
       <i class="ti ti-device-plus"></i>기기 추가
     </button>
@@ -40,6 +42,9 @@
           <button onclick="toggleToolDrawer()" title="프로그램 설정"><i class="ti ti-settings"></i></button>
           <span class="side-divider"></span>
           <button onclick="activateSlot('A');rotateView(-1)" title="좌로 회전"><i class="ti ti-rotate"></i></button>
+          <button data-role="screenPowerButton" onclick="activateSlot('A');toggleDeviceScreen()" title="스마트폰 화면 끄기" aria-pressed="false">
+            <i class="ti ti-device-mobile"></i>
+          </button>
           <button onclick="activateSlot('A');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i></button>
           <button class="side-record" data-role="recordButton" onclick="activateSlot('A');toggleRecord()" title="화면 녹화"><i class="ti ti-circle-filled"></i></button>
           <button onclick="activateSlot('A');openApkPicker()" title="APK 설치"><i class="ti ti-package-import"></i></button>
@@ -77,6 +82,9 @@
           <button onclick="toggleToolDrawer()" title="프로그램 설정"><i class="ti ti-settings"></i></button>
           <span class="side-divider"></span>
           <button onclick="activateSlot('B');rotateView(-1)" title="좌로 회전"><i class="ti ti-rotate"></i></button>
+          <button data-role="screenPowerButton" onclick="activateSlot('B');toggleDeviceScreen()" title="스마트폰 화면 끄기" aria-pressed="false">
+            <i class="ti ti-device-mobile"></i>
+          </button>
           <button onclick="activateSlot('B');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i></button>
           <button class="side-record" data-role="recordButton" onclick="activateSlot('B');toggleRecord()" title="화면 녹화"><i class="ti ti-circle-filled"></i></button>
           <button onclick="activateSlot('B');openApkPicker()" title="APK 설치"><i class="ti ti-package-import"></i></button>

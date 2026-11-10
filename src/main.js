@@ -9,6 +9,19 @@ const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
 
+const WINDOW_PREFERENCES = path.join(app.getPath('userData'), 'window-preferences.json')
+const MIN_WINDOW_WIDTH = 900
+const MIN_WINDOW_HEIGHT = 600
+
+function isAlwaysOnTopPreferenceEnabled() {
+  try {
+    const preferences = JSON.parse(fs.readFileSync(WINDOW_PREFERENCES, 'utf8'))
+    return preferences.alwaysOnTop === true
+  } catch {
+    return false
+  }
+}
+
 const isDev = process.argv.includes('--dev')
 let binDir = app.isPackaged
   ? path.join(process.resourcesPath, 'bin')
@@ -191,33 +204,26 @@ function syncDeviceClipboard(text) {
 }
 
 // ── 윈도우 생성 ────────────────────────────────────────────────
-// 실행 크기이자 최소 크기. 화면이 작으면 작업 영역에 맞춰 줄인다 — 안 그러면 최소 크기가
-// 화면보다 커져 창을 아예 못 쓴다.
+// 시작 크기만 화면 작업 영역에 맞춘다. 최소 크기는 별도로 작게 유지해 사용자가 창을 줄일 수 있다.
 function pickLaunchSize() {
   try {
     const { screen } = require('electron')
     const avail = screen.getPrimaryDisplay().workAreaSize
     return {
-      width: Math.min(1600, Math.max(1100, avail.width - 60)),
-      height: Math.min(900, Math.max(600, avail.height - 60)),
+      width: Math.min(1600, Math.max(1, avail.width - 60)),
+      height: Math.min(900, Math.max(1, avail.height - 60)),
     }
   } catch {
     return { width: 1600, height: 900 }
   }
 }
 
-// 처음 뜬 창 너비 = 최소 너비의 하한. 렌더러가 레이아웃을 재서 더 큰 값을 요구할 수는
-// 있어도(디바이스가 넓으면) 이보다 좁게는 못 내려간다.
-let launchWidth = 0
-
 function createWindow() {
   const launch = pickLaunchSize()
-  launchWidth = launch.width
   mainWindow = new BrowserWindow({
-    // 처음 뜬 크기를 그대로 최소 크기로 삼는다 — 가로·세로 모두 더 줄일 수 없다.
-    // (가로 최소치는 레이아웃이 더 넓게 요구하면 window:set-min-size 로 올라가기만 한다)
     width: launch.width, height: launch.height,
-    minWidth: launch.width, minHeight: launch.height,
+    minWidth: Math.min(MIN_WINDOW_WIDTH, launch.width),
+    minHeight: Math.min(MIN_WINDOW_HEIGHT, launch.height),
     title: `안드로이드 미러링 v${app.getVersion()}`,
     autoHideMenuBar: true,   // Alt 를 눌러도 메뉴바가 나타나지 않게
     backgroundColor: '#0e0e10',
@@ -229,6 +235,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   })
+  mainWindow.setAlwaysOnTop(isAlwaysOnTopPreferenceEnabled())
   // 렌더러 예외는 DevTools 에만 남아 조용히 사라진다(핸들러가 통째로 죽어도 UI 는
   // 멀쩡해 보인다). 경고 이상을 로그 파일로 끌어내 원인 추적이 가능하게 한다.
   mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
@@ -291,6 +298,20 @@ ipcMain.handle('app:update-install', () => {
   }
   autoUpdater.quitAndInstall(true, true)
   return { ok: true }
+})
+
+ipcMain.handle('window:get-always-on-top', () => !!mainWindow?.isAlwaysOnTop())
+ipcMain.handle('window:set-always-on-top', (_, enabled) => {
+  if (!mainWindow || typeof enabled !== 'boolean') {
+    return { ok: false, message: '창 고정 설정을 변경할 수 없습니다.' }
+  }
+  try {
+    fs.writeFileSync(WINDOW_PREFERENCES, JSON.stringify({ alwaysOnTop: enabled }), 'utf8')
+    mainWindow.setAlwaysOnTop(enabled)
+    return { ok: true, enabled }
+  } catch (error) {
+    return { ok: false, message: `창 고정 설정을 저장하지 못했습니다: ${error.message}` }
+  }
 })
 
 // ── ADB 유틸 ──────────────────────────────────────────────────
@@ -539,9 +560,7 @@ ipcMain.handle('jira:open', (_, url) => {
   return { ok: true }
 })
 
-// 디바이스와 LogCat 이 잘리지 않는 선까지만 창을 줄일 수 있게 한다. 필요한 크기는 렌더러가
-// 실제 레이아웃을 재서 넘겨준다(디바이스 너비가 창 높이에 따라 달라지기 때문).
-// 최소 '너비'만 갱신한다. 최소 높이는 실행 시 높이로 고정되어 있으므로 건드리지 않는다.
+// 렌더러가 레이아웃에 필요한 최소 너비를 요청할 수 있다. 시작 크기보다 더 작게도 줄일 수 있다.
 ipcMain.handle('window:set-min-size', (_, width) => {
   if (!mainWindow || !Number.isFinite(width)) return { ok: false }
   // 렌더러가 보내는 값은 '콘텐츠' 기준인데 setMinimumSize 는 창 테두리를 포함한 크기다.
@@ -550,8 +569,7 @@ ipcMain.handle('window:set-min-size', (_, width) => {
   const [contentW] = mainWindow.getContentSize()
   const frameW = Math.max(0, winW - contentW)
 
-  // 실행 시 너비가 하한이다 — 레이아웃이 더 넓게 요구할 때만 올라간다.
-  const w = Math.max(launchWidth, Math.round(width) + frameW)
+  const w = Math.max(MIN_WINDOW_WIDTH, Math.round(width) + frameW)
   const [, minH] = mainWindow.getMinimumSize()
   mainWindow.setMinimumSize(w, minH)
   // 이미 그보다 좁으면 넓혀 준다 (setMinimumSize 만으로는 기존 창이 안 바뀐다)

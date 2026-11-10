@@ -412,6 +412,7 @@ body { overflow:hidden; }
   background:var(--surface); border-bottom:1px solid var(--border); }
 .dual-topbar .logo small { color:var(--muted); font-size:11px; font-weight:400; margin-left:5px; }
 .dual-topbar .btn-sm:disabled { opacity:.45; cursor:not-allowed; }
+.dual-topbar .btn-sm.active { color:var(--accent); background:var(--accent-dim); border-color:var(--accent); }
 .dual-workspace { flex:1; min-height:0; display:grid; grid-template-rows:minmax(0,1fr) 8px var(--dual-log-height, 220px);
   gap:0; padding:10px; }
 .device-col.layout, .layout { display:none !important; }
@@ -427,9 +428,9 @@ body { overflow:hidden; }
 .slot-disconnect { padding:6px 8px; }
 .slot-disconnect[hidden] { display:none; }
 .device-panel-body { flex:1; min-height:0; display:grid; grid-template-columns:44px minmax(0,1fr); gap:9px; }
-.device-side-tools { display:flex; flex-direction:column; align-items:center; gap:4px; padding:5px 3px;
+.device-side-tools { display:flex; flex-direction:column; align-items:center; gap:4px; padding:5px 3px; min-height:0; overflow-y:auto;
   background:var(--surface2); border:1px solid var(--border); border-radius:9px; }
-.device-side-tools button { width:35px; height:34px; display:flex; align-items:center; justify-content:center;
+.device-side-tools button { flex:0 0 34px; width:35px; height:34px; display:flex; align-items:center; justify-content:center;
   background:transparent; color:var(--muted); border:1px solid transparent; border-radius:7px; cursor:pointer; }
 .device-side-tools button:hover,.device-side-tools button.active { background:var(--accent-dim); color:var(--accent); border-color:var(--accent); }
 .device-side-tools button i { font-size:17px; }
