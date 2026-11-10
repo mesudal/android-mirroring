@@ -604,16 +604,6 @@ function setupCanvasEvents(canvas, input) {
     isDown = true
     focusKeyTarget()
     showTouchIndicator(e, true)
-    const position = getDevicePosition(e)
-    if (device.serial && position) {
-      window.db.recordTouch({
-        serial: device.serial,
-        x: position.x,
-        y: position.y,
-        screenWidth: position.screenWidth,
-        screenHeight: position.screenHeight,
-      })
-    }
     sendTouchEvent(0, e) // 0 = DOWN
     window.addEventListener('mousemove', onDragMove)
     window.addEventListener('mouseup', onDragEnd)
@@ -1487,11 +1477,6 @@ window.db.onRecordEnded((status, serial) => {
   const device = deviceSlots.find(slot => slot.serial === serial)
   if (device?.recording) withActiveDevice(device, () => finishRecording(status.message || '기기 녹화가 예기치 않게 종료되었습니다'))
 })
-window.db.onRecordOverlayProgress((serial, percent) => {
-  const device = deviceSlots.find(slot => slot.serial === serial)
-  if (device) withActiveDevice(device, () =>
-    setRecordingStatus('saving', `터치 링 합성 중 · ${percent}%`))
-})
 let updateDialogState = 'idle'
 let pendingUpdateVersion = ''
 
@@ -2206,9 +2191,8 @@ async function finishRecording(reason) {
   try {
     const r = await window.db.recordStop(serial)
     if (r.ok) {
-      const status = r.warning ? `녹화 저장 완료 · ${r.warning}` : '녹화 저장 완료'
-      withActiveDevice(device, () => setRecordingStatus('saved', status, r.path))
-      showToast(r.warning || '녹화 저장 완료: ' + r.path, !!r.warning)
+      withActiveDevice(device, () => setRecordingStatus('saved', '녹화 저장 완료', r.path))
+      showToast('녹화 저장 완료: ' + r.path)
     } else if (r.canceled) {
       withActiveDevice(device, () => setRecordingStatus('canceled', '저장을 취소했습니다. 녹화본은 기기에 임시 보관되어 있습니다.'))
       showToast('녹화 저장을 취소했습니다', true)
