@@ -746,6 +746,28 @@
         <!-- 이슈 타입은 등록할 때마다 고르므로 여기서는 받지 않는다 -->
       </div>
 
+      <!-- 스프린트 — 발행한 티켓을 어느 스프린트에 넣을지. 프로젝트와 같이 연결이 확인된 뒤에 보인다.
+           '진행 중' 은 발행할 때마다 그 보드의 현재 스프린트를 찾으므로 스프린트가 바뀌어도 다시 고를 필요가 없다. -->
+      <div id="jiraSprintRow" style="display:none">
+        <div class="jira-field">
+          <label for="jiraSprintMode">스프린트</label>
+          <select id="jiraSprintMode" class="modal-input" onchange="onJiraSprintModeChange()">
+            <option value="off">지정 안 함 (백로그에 둠)</option>
+            <option value="active">항상 진행 중인 스프린트</option>
+            <option value="fixed">특정 스프린트 지정</option>
+          </select>
+        </div>
+        <div class="jira-field" id="jiraBoardField" style="display:none">
+          <label for="jiraBoard">보드</label>
+          <select id="jiraBoard" class="modal-input" onchange="onJiraBoardChange()"></select>
+        </div>
+        <div class="jira-field" id="jiraSprintField" style="display:none">
+          <label for="jiraSprint">스프린트 선택</label>
+          <select id="jiraSprint" class="modal-input"></select>
+        </div>
+        <small class="jira-sprint-hint" id="jiraSprintHint"></small>
+      </div>
+
       <div style="display:flex;gap:10px;margin-top:6px">
         <button class="btn-primary" style="flex:1;justify-content:center" onclick="saveJiraConfig()">
           <i class="ti ti-device-floppy"></i>저장

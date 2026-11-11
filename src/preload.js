@@ -78,6 +78,8 @@ contextBridge.exposeInMainWorld('db', {
   jiraIssueTypes: (projectKey) => ipcRenderer.invoke('jira:issue-types', projectKey),
   jiraFields: (opts) => ipcRenderer.invoke('jira:fields', opts),
   jiraAssignable: (opts) => ipcRenderer.invoke('jira:assignable', opts),
+  jiraBoards: (projectKey) => ipcRenderer.invoke('jira:boards', projectKey),
+  jiraSprints: (boardId) => ipcRenderer.invoke('jira:sprints', boardId),
   jiraCreate: (issue) => ipcRenderer.invoke('jira:create', issue),
   jiraOpen: (url) => ipcRenderer.invoke('jira:open', url),
 

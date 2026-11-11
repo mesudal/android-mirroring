@@ -96,6 +96,8 @@ Android 개발자 옵션의 `show_touches` 는 물리 터치만 표시하고 scr
 
 Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF JSON 으로만 받아 QA 리포트 평문을 넣을 수 없다. 토큰은 `safeStorage` 로 암호화해 `userData/jira.json`(mode 0600)에 두고 **렌더러로는 절대 돌려보내지 않는다**(`hasToken` 불리언만). `jira:open` 은 atlassian.net / id.atlassian.com 만 허용하는 화이트리스트가 걸려 있다. 스코프형 토큰이면 사이트 주소가 401 이라 `api.atlassian.com/ex/jira/<cloudId>` 게이트웨이로 폴백하고 그 경로를 캐시한다 — 이 분기는 자가진단이 덮고 있다.
 
+**스프린트는 이슈를 만든 뒤 Agile API(`POST /rest/agile/1.0/sprint/{id}/issue`)로 넣는다.** 스프린트는 사이트마다 번호가 다른 커스텀 필드이고 생성 화면에 없으면 생성 API 가 거부하므로 생성 본문에 넣지 않는다. 설정(`jira.json`)은 `sprintMode`(`off` / `active` / `fixed`)·`boardId`·`boardName`·`sprintId`·`sprintName`. `active` 는 발행할 때마다 `resolveSprint()` 가 보드의 진행 중 스프린트를 고른다(병렬 스프린트면 그 보드에서 만든 것 → 먼저 끝나는 것, `pickActiveSprint()` — 렌더러의 안내 문구용 `jiraPickActive()` 와 규칙을 맞춰 둘 것). 완료된 스프린트는 Jira 가 거부하므로 `fixed` 는 넣기 전에 상태를 확인한다. 스프린트 실패는 첨부 실패처럼 `r.warn` 으로만 돌려준다(이슈는 이미 만들어졌다). Agile API 의 401/403 은 스코프형 토큰의 Jira Software 권한 누락일 수 있어 `agileErr()` 가 그 안내를 붙인다.
+
 QA 화면 확인은 `src/qa-driver.js` 가 ADB UIAutomator XML을 읽고 `src/qa-xml.js` 가 접근성 요소와 좌표를 파싱한다. 렌더러의 QA 탭은 역할별 기기·앱 변형을 선택하고 화면 요소를 확인·탭한다(좌표 탭, 글자로 누르기). 현재 단계에는 시나리오 실행기와 결과 보고가 포함되지 않는다.
 
 - **QA 대상 앱 목록은 `src/qa-apps.js` 의 `QA_APPS` 한 곳이다.** 앱 → 타입 → 패키지 구조이고(제로톡 = 무료용 `net.zerotalk.free` / 단체용 사용자 `net.zerotalk.user` / 단체용 관리자 `net.zerotalk.admin`), 새 앱은 여기에 항목만 추가하면 좌측 메뉴의 앱 선택 창과 QA 탭이 그대로 그린다. `validateApps()` 자가진단이 id·패키지 중복을 잡는다. 렌더러는 `qa:apps` 로 받는다.
