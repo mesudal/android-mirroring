@@ -135,6 +135,7 @@ function updateDevicePanels() {
     if (device.panel) device.panel.style.display = visible.includes(device) ? 'flex' : 'none'
     const disconnectButton = slotElement(device, 'slotDisconnectButton')
     if (disconnectButton) disconnectButton.hidden = !device.serial
+    device.panel?.classList.toggle('no-device', !device.serial)
   })
   const workspace = document.querySelector('.dual-workspace')
   if (workspace) workspace.style.setProperty('--device-count', visible.length)
@@ -463,10 +464,13 @@ function qaButton(icon, label, onclick, opts = {}) {
 
 const qaVer = x => `v${x.versionName} (${x.versionCode})`
 
-async function renderQaApkSection(app, serial, token) {
-  const box = document.getElementById('qaApkSection')
+// opts: { boxId, variant, isCurrent } — 기본은 앱 선택 창(qaApkSection, 그 기기에서 고른 타입).
+// QA 준비 칸은 역할 A 의 기기·타입으로 같은 내용을 그린다 (renderQaPrepApk).
+async function renderQaApkSection(app, serial, token, opts = {}) {
+  const box = document.getElementById(opts.boxId || 'qaApkSection')
   if (!box) return
-  const variant = qaVariantFor(serial)
+  const variant = opts.variant !== undefined ? opts.variant : qaVariantFor(serial)
+  const isCurrent = opts.isCurrent || (() => token === qaPickerToken)
   box.hidden = false
   if (!variant) {
     box.replaceChildren(qaEl('div', 'qa-apk-title', '업데이트 테스트'),
@@ -479,14 +483,15 @@ async function renderQaApkSection(app, serial, token) {
   try { status = await window.db.qaApkStatus({ serial, appId: app.id, variantId: variant.id }) } catch (error) {
     status = { ok: false, message: error.message }
   }
-  if (token !== qaPickerToken) return
+  if (!isCurrent()) return
   const title = qaEl('div', 'qa-apk-title', `업데이트 테스트 · ${variant.name}`)
   if (!status.ok) { box.replaceChildren(title, qaEl('div', 'qa-apk-check error', status.message)); return }
 
   const ctx = { appId: app.id, variantId: variant.id, serial, variantName: variant.name }
   const parts = [title]
-  parts.push(qaEl('div', 'qa-apk-meta',
-    status.installed ? `이 기기에 설치된 버전: ${qaVer(status.installed)}` : `이 기기에는 ${variant.name} 이(가) 설치돼 있지 않습니다`))
+  parts.push(qaEl('div', 'qa-apk-meta', !serial
+    ? '기기를 고르면 설치 가능 여부도 확인합니다'
+    : status.installed ? `이 기기에 설치된 버전: ${qaVer(status.installed)}` : `이 기기에는 ${variant.name} 이(가) 설치돼 있지 않습니다`))
 
   // 기존 버전 → 업데이트 순서로 카드 두 장
   for (const [i, kind] of [['1', 'base'], ['2', 'update']]) {
@@ -537,14 +542,14 @@ async function registerQaApk({ appId, variantId, variantName }, kind) {
   if (r.canceled) return
   if (!r.ok) { showToast(r.message, true); return }
   showToast(`${variantName} ${QA_APK_KIND_NAMES[kind]} APK 등록: ${qaVer(r.apk)}`)
-  renderQaAppPicker()
+  refreshQaApkViews()
 }
 
 async function unregisterQaApk({ appId, variantId, variantName }, kind) {
   if (!confirm(`${variantName} 의 ${QA_APK_KIND_NAMES[kind]} APK 등록을 해제할까요? (APK 파일은 지우지 않습니다)`)) return
   const r = await window.db.qaApkUnregister({ appId, variantId, kind })
   if (!r.ok) { showToast(r.message, true); return }
-  renderQaAppPicker()
+  refreshQaApkViews()
 }
 
 async function installQaApk({ appId, variantId, serial, variantName }, kind, status) {
@@ -562,7 +567,7 @@ async function installQaApk({ appId, variantId, serial, variantName }, kind, sta
   showToast(`${variantName} ${QA_APK_KIND_NAMES[kind]} 설치 중... (최대 몇 분 걸릴 수 있습니다)`, false, true)
   const r = await window.db.qaApkInstall({ appId, variantId, serial, kind })
   showToast(r.message, !r.ok)
-  if (document.getElementById('qaAppOverlay')?.classList.contains('open')) renderQaAppPicker()
+  refreshQaApkViews()
   syncQaRoleCards(serial)
 }
 
@@ -671,12 +676,14 @@ async function renderQaPackageSelect(role) {
   if (chosen && installed.some(v => v.id === chosen.id)) select.value = chosen.pkg
   qaAssignments[role] = { serial, pkg: select.value }
   saveQaAssignments()
+  if (role === 'A') { previewQaRun(); renderQaPrepApk() }
+  if (role !== 'A') renderQaRoleMoreHint()
   select.onchange = () => {
     const variant = result.variants.find(v => v.pkg === select.value)
     setQaVariant(serial, variant?.id || '')
     qaAssignments[role] = { serial, pkg: select.value }
     saveQaAssignments()
-    if (role === 'A') previewQaRun()
+    if (role === 'A') { previewQaRun(); renderQaPrepApk() } else renderQaRoleMoreHint()
     // 같은 기기를 다른 역할에도 배정했으면 그쪽도 맞춘다
     for (const other of QA_ROLES) {
       if (other !== role && qaRoleCard(other)?.querySelector('.qa-device-select')?.value === serial) renderQaPackageSelect(other)
@@ -688,6 +695,7 @@ async function renderQaPackageSelect(role) {
 async function loadQaSetup() {
   if (qaLoadPromise) return qaLoadPromise
   qaLoadPromise = (async () => {
+    showQaSection(localStorage.getItem('db_qa_section') || 'run')
     setQaStatus('연결된 기기와 설치된 앱을 확인하는 중...')
     await ensureQaApps()
     renderQaAppSelect()
@@ -851,6 +859,115 @@ async function tapQaByText() {
   }
 }
 
+// ── QA 탭 칸 (실행 · 준비 · 화면 도구) ──────────────────────────
+function showQaSection(id) {
+  const map = { run: 'qaSecRun', prep: 'qaSecPrep', tools: 'qaSecTools' }
+  if (!map[id]) id = 'run'
+  for (const [k, elId] of Object.entries(map)) {
+    const el = document.getElementById(elId)
+    if (el) el.hidden = k !== id
+  }
+  document.querySelectorAll('.qa-seg-btn').forEach(b => {
+    const on = b.dataset.qaSec === id
+    b.classList.toggle('active', on)
+    b.setAttribute('aria-selected', String(on))
+  })
+  try { localStorage.setItem('db_qa_section', id) } catch { }
+  if (id === 'prep') renderQaPrepApk()
+}
+
+let qaPrepApkToken = 0
+
+// 준비 칸의 업데이트 테스트 APK — 역할 A 의 기기·타입 기준 (앱 선택 창과 같은 함수로 그린다)
+async function renderQaPrepApk() {
+  const box = document.getElementById('qaPrepApk')
+  if (!box || document.getElementById('qaSecPrep')?.hidden) return
+  await ensureQaApps()
+  const app = qaCurrentApp()
+  const card = qaRoleCard('A')
+  const serial = card?.querySelector('.qa-device-select')?.value || ''
+  const pkg = card?.querySelector('.qa-package-select')?.value || ''
+  const variant = app?.variants.find(v => v.pkg === pkg) || null
+  const token = ++qaPrepApkToken
+  if (!app || !variant) {
+    box.replaceChildren(qaEl('div', 'qa-apk-meta', '위 2번에서 역할 A 의 기기와 앱 타입을 먼저 고르세요'))
+    return
+  }
+  await renderQaApkSection(app, serial, token, { boxId: 'qaPrepApk', variant, isCurrent: () => token === qaPrepApkToken })
+}
+
+// APK 를 등록·해제·설치한 뒤 — 열려 있는 쪽을 모두 다시 그린다
+function refreshQaApkViews() {
+  if (document.getElementById('qaAppOverlay')?.classList.contains('open')) renderQaAppPicker()
+  renderQaPrepApk()
+  renderQaReady()
+}
+
+// 접어 둔 상대 기기(B·C)에 무엇이 배정됐는지 한 줄로
+function renderQaRoleMoreHint() {
+  const parts = []
+  for (const role of ['B', 'C']) {
+    const card = qaRoleCard(role)
+    const dev = card?.querySelector('.qa-device-select')
+    const pkg = card?.querySelector('.qa-package-select')
+    if (dev?.value && pkg?.value) parts.push(`${role}: ${(dev.selectedOptions[0]?.textContent || '').split(' · ')[0]}`)
+  }
+  setText('qaRoleMoreHint', parts.length ? parts.join(' / ') : '배정 안 함')
+  const more = document.getElementById('qaRoleMore')
+  // 배정돼 있으면 처음 한 번만 펼쳐 보여 준다 (사용자가 접은 뒤엔 다시 펼치지 않는다)
+  if (more && parts.length && !more.dataset.touched) { more.open = true; more.dataset.touched = '1' }
+}
+
+let qaReadyToken = 0
+
+// 실행 칸 맨 위 "준비 상태" — 빠진 것을 한눈에 보고, 누르면 준비 칸으로 간다
+async function renderQaReady() {
+  const box = document.getElementById('qaReadyList')
+  if (!box) return
+  const token = ++qaReadyToken
+  const rows = []
+  const row = (state, label, text) => rows.push({ state, label, text })
+  const c = qaAuto.checklist
+  row(c ? 'ok' : 'bad', '체크리스트', c ? `${c.name || '가져옴'} · ${c.items.length}개 항목` : '없음 — 가져와 주세요')
+  const card = qaRoleCard('A')
+  const dev = card?.querySelector('.qa-device-select')
+  const pkg = card?.querySelector('.qa-package-select')
+  const devText = dev?.value ? (dev.selectedOptions[0]?.textContent || '').split(' · ')[0] : ''
+  const pkgText = pkg?.value ? (pkg.selectedOptions[0]?.textContent || '') : ''
+  row(dev?.value && pkg?.value ? 'ok' : 'bad', '시험 기기 A', dev?.value && pkg?.value ? `${devText} · ${pkgText}` : '기기와 앱 타입을 골라 주세요')
+  const accKey = loadQaRoleAccounts().A
+  const acc = qaAuto.accounts.find(a => a.key === accKey)
+  row(acc ? 'ok' : 'warn', '테스트 계정', acc ? acc.label : '없음 — 로그인이 필요한 항목은 Blocked 가 됩니다')
+  const others = ['B', 'C'].filter(r => qaRoleCard(r)?.querySelector('.qa-device-select')?.value && qaRoleCard(r)?.querySelector('.qa-package-select')?.value)
+  row(others.length ? 'ok' : 'info', '상대 기기', others.length ? others.join(' · ') : '없음 — 여러 대가 필요한 항목은 Blocked 가 됩니다')
+  if (document.getElementById('qaRunUpdate')?.checked) {
+    const app = qaCurrentApp()
+    const variant = app?.variants.find(v => v.pkg === pkg?.value)
+    let apk = { state: 'bad', text: '역할 A 의 앱 타입을 먼저 고르세요' }
+    if (variant) {
+      const s = await window.db.qaApkStatus({ appId: app.id, variantId: variant.id }).catch(() => null)
+      if (token !== qaReadyToken) return
+      if (!s?.ok) apk = { state: 'bad', text: s?.message || 'APK 정보를 읽지 못했습니다' }
+      else if (!s.base.registered || !s.update.registered) apk = { state: 'bad', text: `${!s.base.registered ? '기존 버전' : '업데이트'} APK 를 등록해 주세요` }
+      else apk = { state: s.pair?.ok ? (s.pair.level === 'ok' ? 'ok' : 'warn') : 'bad', text: s.pair?.message || '등록됨' }
+    }
+    row(apk.state, '업데이트 APK', apk.text)
+  }
+  if (token !== qaReadyToken) return
+  const icon = { ok: 'ti-circle-check', warn: 'ti-alert-triangle', bad: 'ti-circle-x', info: 'ti-circle-dashed' }
+  box.replaceChildren(...rows.map(r => {
+    const b = qaEl('button', `qa-ready-row ${r.state}`)
+    b.type = 'button'
+    b.title = '준비 칸에서 바꾸기'
+    b.onclick = () => showQaSection('prep')
+    const i = qaEl('i', `ti ${icon[r.state]}`)
+    const main = qaEl('span', 'qa-ready-main')
+    main.append(qaEl('b', '', r.label), qaEl('span', '', r.text))
+    b.append(i, main)
+    return b
+  }))
+}
+
 // ── QA 자동 진행 ───────────────────────────────────────────────
 // 체크리스트(CSV) + 시나리오(JSON) → 실행 → 회차별 결과. 실제 실행·저장은 메인(qa:*)이 하고,
 // 여기서는 설정을 모아 보내고 진행·결과를 그린다. 계정 비밀번호는 여기로 오지 않는다.
@@ -883,6 +1000,7 @@ function saveQaRoleAccount(role, key) {
   const m = loadQaRoleAccounts()
   if (key) m[role] = key; else delete m[role]
   qaSaveJson('db_qa_role_accounts', m)
+  renderQaReady()
 }
 
 // '직접 고른 항목' — 앱마다
@@ -976,6 +1094,7 @@ function onQaRunOptionChange() { previewQaRun() }
 
 // 이번 범위에 몇 항목이 드는지 미리 보여 준다
 async function previewQaRun() {
+  renderQaReady()
   const el = document.getElementById('qaRunPreview')
   if (!el) return
   if (!qaAuto.checklist) { el.textContent = '체크리스트를 먼저 가져와 주세요'; return }
@@ -2057,7 +2176,7 @@ function updateDeviceScreenButton(device) {
   button.classList.toggle('active', device.screenOff)
   button.setAttribute('aria-pressed', String(device.screenOff))
   button.title = device.screenOff ? '스마트폰 화면 켜기' : '스마트폰 화면 끄기'
-  button.innerHTML = `<i class="ti ${device.screenOff ? 'ti-device-mobile-off' : 'ti-device-mobile'}"></i>`
+  button.innerHTML = `<i class="ti ${device.screenOff ? 'ti-device-mobile-off' : 'ti-device-mobile'}"></i><span>${device.screenOff ? '화면 켜기' : '화면 끄기'}</span>`
 }
 
 function toggleDeviceScreen() {
@@ -3308,6 +3427,8 @@ function setRecordingUI(on, busy = false) {
     sideButton.classList.toggle('on', on)
     sideButton.disabled = busy
     sideButton.title = on ? '녹화 종료 및 저장' : '화면 녹화 시작'
+    const label = sideButton.querySelector('span')
+    if (label) label.textContent = on ? '중지' : '녹화'
   }
   const btn = $('recToggle')
   if (btn) {
@@ -3739,6 +3860,16 @@ function toggleToolPanel() {
 }
 
 let toolDrawerOrigin = null
+
+// 위쪽 막대의 [QA] [설정] — 도구 패널을 그 탭으로 연다. 이미 열려 있으면 탭만 바꾼다.
+function openToolPage(page) {
+  const col = document.querySelector('.tool-col')
+  if (!col) return
+  if (!col.classList.contains('visible')) toggleToolDrawer()
+  const tab = document.querySelector(`.tool-tab[onclick*="'${page}'"]`)
+  switchPage(page, tab)
+  if (page === 'qa') loadQaSetup()
+}
 
 function toggleToolDrawer() {
   const col = document.querySelector('.tool-col')
