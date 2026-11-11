@@ -5,7 +5,7 @@ const { spawn, execFile, execSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
-const QaDriver = require('./qa-driver')
+const { createDriver } = require('./qa-driver')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
@@ -329,8 +329,34 @@ function runAdb(args, timeout = 15000) {
   })
 }
 
-const qaDriver = new QaDriver(runAdb)
+// ── QA 자동화 ──────────────────────────────────────────────────
+// 미러링 대상과 무관하게 기기를 지정해 제어한다. 드라이버는 기기별로 하나만 만들어
+// 재사용한다 — 드라이버가 그 기기의 adb 명령 큐를 들고 있기 때문이다.
+const qaDrivers = new Map()
 
+function getQaDriver(serial) {
+  let driver = qaDrivers.get(serial)
+  if (!driver) {
+    driver = createDriver({ adb: () => adbPath, serial })
+    qaDrivers.set(serial, driver)
+  }
+  return driver
+}
+
+const qaSerialOk = serial => typeof serial === 'string' && serial.trim() !== ''
+
+// 렌더러(QA 탭)가 쓰는 요소 모양. 넓이가 없는 노드는 누를 수 없으므로 center 를 비운다.
+function qaElement(node, index) {
+  const b = node.bounds
+  return {
+    index,
+    text: node.text, desc: node.desc, id: node.id, className: node.cls,
+    bounds: `[${b.x1},${b.y1}][${b.x2},${b.y2}]`,
+    center: node.visible ? { x: node.cx, y: node.cy } : null,
+    enabled: node.enabled, checked: node.checked, clickable: node.clickable,
+    packageName: node.pkg,
+  }
+}
 // ── IPC 핸들러들 ──────────────────────────────────────────────
 
 // 기기 목록
@@ -353,43 +379,58 @@ ipcMain.handle('adb:devices', async () => {
 })
 
 ipcMain.handle('qa:packages', async (_, serial) => {
-  if (typeof serial !== 'string' || !serial.trim()) {
-    return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
-  }
+  if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
   try {
-    const output = await qaDriver.runForDevice(serial, () =>
-      runAdb(['-s', serial, 'shell', 'pm', 'list', 'packages', '-3']))
-    const packages = output.split(/\r?\n/)
+    // --user 0: 보안 폴더 등 다른 사용자 프로필이 있는 기기는 사용자 지정 없이 조회하면
+    // "Shell does not have permission to access user 150" 으로 실패한다 (SM-G986N 에서 실측).
+    const r = await getQaDriver(serial).shell('pm list packages -3 --user 0')
+    if (!r.ok) return { ok: false, message: `설치된 앱 목록을 가져오지 못했습니다: ${r.message}` }
+    const packages = r.out.split(/\r?\n/)
       .map(line => line.trim().replace(/^package:/, ''))
       .filter(name => name && /^[\w.]+$/.test(name))
       .sort((a, b) => a.localeCompare(b))
     return { ok: true, packages }
   } catch (error) {
-    return { ok: false, message: `설치된 앱 목록을 가져오지 못했습니다: ${String(error)}` }
+    return { ok: false, message: `설치된 앱 목록을 가져오지 못했습니다: ${String(error?.message || error)}` }
   }
 })
 
+// 지정 기기의 현재 화면 구조를 요소 목록으로 돌려준다
 ipcMain.handle('qa:inspect', async (_, serial) => {
+  if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
   try {
-    const result = await qaDriver.dumpUi(serial)
-    const appPackage = result.elements.find(element => element.packageName)?.packageName || ''
-    return { ok: true, appPackage, elements: result.elements, xml: result.xml }
+    const r = await getQaDriver(serial).dump()
+    if (!r.ok) return { ok: false, message: r.message }
+    if (!r.nodes.length) return { ok: false, message: '화면 구조 XML에서 요소를 찾지 못했습니다' }
+    const elements = r.nodes.map(qaElement)
+    const appPackage = elements.find(element => element.packageName)?.packageName || ''
+    return { ok: true, appPackage, elements, xml: r.xml }
   } catch (error) {
-    return { ok: false, message: String(error) }
+    return { ok: false, message: String(error?.message || error) }
   }
 })
 
+// 좌표({ x, y }) 또는 셀렉터({ sel })로 누른다. 셀렉터는 qa-xml 의 셀렉터 객체다.
 ipcMain.handle('qa:tap', async (_, input) => {
   try {
-    if (!input || typeof input !== 'object') throw new Error('탭 좌표를 지정해 주세요')
-    const { serial, x, y } = input
-    await qaDriver.tap(serial, x, y)
-    return { ok: true }
+    if (!input || typeof input !== 'object') return { ok: false, message: '탭할 위치를 지정해 주세요' }
+    const { serial, x, y, sel, timeout = 3000 } = input
+    if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
+    const driver = getQaDriver(serial)
+    if (sel !== undefined) {
+      const r = await driver.tap(sel, { timeout })
+      if (!r.ok) return { ok: false, message: r.message }
+      return { ok: true, x: r.x, y: r.y, label: r.node?.label || '' }
+    }
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0) {
+      return { ok: false, message: '탭 좌표가 올바르지 않습니다' }
+    }
+    const r = await driver.tapAt(x, y)
+    return r.ok ? { ok: true, x, y } : { ok: false, message: r.message }
   } catch (error) {
-    return { ok: false, message: String(error) }
+    return { ok: false, message: String(error?.message || error) }
   }
 })
-
 // Wi-Fi 연결
 ipcMain.handle('adb:connect', async (_, ip, port = 5555) => {
   try {

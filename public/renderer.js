@@ -466,6 +466,34 @@ async function tapQaElement() {
   }
 }
 
+// 입력한 글자의 요소를 찾아 누른다. 좌표 탭과 달리 메인 프로세스가 화면을 다시 읽어
+// 찾으므로 목록을 조회한 뒤 화면이 바뀌었어도 맞는 위치를 누른다.
+// 완전히 같은 글자를 먼저 찾고, 없으면 그 글자를 포함하는 요소를 누른다.
+async function tapQaByText() {
+  const role = document.getElementById('qaInspectRole')?.value || 'A'
+  const serial = qaRoleCard(role)?.querySelector('.qa-device-select')?.value || ''
+  const text = (document.getElementById('qaTapText')?.value || '').trim()
+  if (!serial) { setQaStatus(`역할 ${role}의 기기를 선택해 주세요`, true); return }
+  if (!text) { setQaStatus('누를 버튼의 글자를 입력해 주세요', true); return }
+
+  const button = document.getElementById('qaTapTextButton')
+  if (button) button.disabled = true
+  setQaStatus(`역할 ${role} 화면에서 "${text}" 을(를) 찾는 중...`)
+  try {
+    let result = await window.db.qaTap({ serial, sel: { text } })
+    if (!result.ok) result = await window.db.qaTap({ serial, sel: { textContains: text }, timeout: 1000 })
+    if (!result.ok) {
+      setQaStatus(`글자로 누르기 실패: ${result.message}`, true)
+      return
+    }
+    setQaStatus(`역할 ${role} 화면의 "${result.label || text}" (${result.x}, ${result.y}) 을(를) 눌렀습니다. 화면을 다시 조회해 결과를 확인하세요.`)
+  } catch (error) {
+    setQaStatus(`글자로 누르기 실패: ${error.message}`, true)
+  } finally {
+    if (button) button.disabled = false
+  }
+}
+
 // ── 모달 ───────────────────────────────────────────────────────
 function openConnectModal() {
   $('connectOverlay').classList.add('open')

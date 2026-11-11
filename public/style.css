@@ -283,6 +283,8 @@ nav button, nav .conn-badge { -webkit-app-region:no-drag; }
 .qa-role-card select, .qa-inspect-card select, #qaElementFilter { width:100%; min-width:0; margin-top:5px; }
 .qa-inspect-controls { display:grid; grid-template-columns:74px 1fr; gap:6px; align-items:center; }
 .qa-inspect-controls select, .qa-inspect-controls button { margin:0; min-width:0; }
+.qa-tap-text { display:grid; grid-template-columns:1fr auto; gap:6px; align-items:center; margin-top:6px; }
+.qa-tap-text input, .qa-tap-text button { margin:0; min-width:0; }
 .qa-status { color:var(--muted); font-size:10px; line-height:1.4; margin:7px 0 2px; overflow-wrap:anywhere; }
 .qa-status.error { color:var(--red); }
 .qa-element-list { display:flex; flex-direction:column; gap:4px; max-height:250px; overflow:auto;

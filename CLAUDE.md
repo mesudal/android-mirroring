@@ -96,7 +96,13 @@ Android 개발자 옵션의 `show_touches` 는 물리 터치만 표시하고 scr
 
 Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF JSON 으로만 받아 QA 리포트 평문을 넣을 수 없다. 토큰은 `safeStorage` 로 암호화해 `userData/jira.json`(mode 0600)에 두고 **렌더러로는 절대 돌려보내지 않는다**(`hasToken` 불리언만). `jira:open` 은 atlassian.net / id.atlassian.com 만 허용하는 화이트리스트가 걸려 있다. 스코프형 토큰이면 사이트 주소가 401 이라 `api.atlassian.com/ex/jira/<cloudId>` 게이트웨이로 폴백하고 그 경로를 캐시한다 — 이 분기는 자가진단이 덮고 있다.
 
-QA 화면 확인은 `src/qa-driver.js` 가 ADB UIAutomator XML을 읽고 `src/qa-xml.js` 가 접근성 요소와 좌표를 파싱한다. 렌더러의 QA 탭은 역할별 기기·앱 변형을 선택하고 화면 요소를 확인·탭한다. 현재 단계에는 시나리오 실행기와 결과 보고가 포함되지 않는다.
+QA 화면 확인은 `src/qa-driver.js` 가 ADB UIAutomator XML을 읽고 `src/qa-xml.js` 가 접근성 요소와 좌표를 파싱한다. 렌더러의 QA 탭은 역할별 기기·앱 변형을 선택하고 화면 요소를 확인·탭한다(좌표 탭, 글자로 누르기). 현재 단계에는 시나리오 실행기와 결과 보고가 포함되지 않는다.
+
+- **드라이버는 기기 1대당 하나다** (`createDriver({ adb, serial })`, `main.js` 의 `getQaDriver()` 가 캐시). 드라이버가 그 기기의 adb 명령 큐를 들고 있어 같은 기기 명령은 순서대로, 다른 기기는 병렬로 돈다. 모든 메서드는 예외 대신 `{ ok, message }` 를 돌려준다.
+- **제로톡(`net.zerotalk.free`)은 Flutter 다.** 글자가 `text` 가 아니라 `content-desc` 로 오고 `resource-id` 는 전부 비어 있다(SM-G986N / Android 13 실측). 그래서 `text` · `textContains` · `textMatches` 셀렉터는 **둘 다** 본다. `{ id: ... }` 셀렉터는 이 앱에서 쓸 수 없다.
+- 셀렉터 종류와 검증은 `qa-xml.js` 의 `SELECTOR_KEYS` / `selectorError()` 한 곳이다. 넓이 0 노드(`[0,0][0,0]`)는 매칭에서 빠진다.
+- `qa:packages` 는 `pm list packages -3 --user 0` 을 쓴다. 보안 폴더가 있는 기기는 `--user` 없이 조회하면 `Shell does not have permission to access user 150` 으로 실패한다.
+- 드라이버의 기기 상태 명령(네트워크·권한·오버레이·배터리 최적화·위치)은 **아직 실기기에서 돌려 보지 않았다.** 무선 ADB 로 붙은 기기는 네트워크 차단을 거부한다(와이파이를 끄면 adb 가 끊겨 되돌릴 수 없다).
 
 ### 5. 패킷 분석 프록시 (`src/proxy-server.js`, `src/cert-manager.js`)
 

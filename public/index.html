@@ -368,6 +368,14 @@
                 <i class="ti ti-scan"></i>현재 화면 조회
               </button>
             </div>
+            <!-- 글자로 누르기 — 화면을 다시 읽어 그 글자의 요소를 찾아 누른다 (시나리오의 tap 과 같은 경로) -->
+            <div class="qa-tap-text">
+              <input id="qaTapText" class="settings-input" placeholder="누를 버튼 글자 (예: 확인)" spellcheck="false"
+                aria-label="누를 버튼 글자" onkeydown="if(event.key==='Enter')tapQaByText()">
+              <button class="btn-sm" id="qaTapTextButton" onclick="tapQaByText()">
+                <i class="ti ti-hand-finger"></i>누르기
+              </button>
+            </div>
             <div class="qa-status" id="qaStatus" role="status">기기와 앱을 선택해 주세요</div>
             <input id="qaElementFilter" class="settings-input" placeholder="요소 글자·설명·ID 검색"
               oninput="renderQaElements()">
