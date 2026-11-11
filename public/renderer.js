@@ -367,6 +367,8 @@ function closeQaAppPicker() {
   document.getElementById('qaAppOverlay')?.classList.remove('open')
   // 다른 기기로 다시 열었을 때 이전 기기의 목록(과 그 기기를 가리키는 클릭 핸들러)이 남지 않게
   document.getElementById('qaVariantList')?.replaceChildren()
+  const apkBox = document.getElementById('qaApkSection')
+  if (apkBox) { apkBox.replaceChildren(); apkBox.hidden = true }
 }
 
 async function renderQaAppPicker() {
@@ -385,7 +387,8 @@ async function renderQaAppPicker() {
     return b
   }))
   const empty = text => { const d = document.createElement('div'); d.className = 'qa-picker-empty'; d.textContent = text; return d }
-  if (!app) { list.replaceChildren(empty('등록된 QA 앱이 없습니다')); return }
+  const apkBox = document.getElementById('qaApkSection')
+  if (!app) { list.replaceChildren(empty('등록된 QA 앱이 없습니다')); if (apkBox) apkBox.hidden = true; return }
 
   const token = ++qaPickerToken
   const serial = qaPickerSerial
@@ -395,7 +398,7 @@ async function renderQaAppPicker() {
     status = { ok: false, message: error.message }
   }
   if (token !== qaPickerToken) return   // 그 사이 다른 앱을 눌렀거나 창을 닫았다
-  if (!status.ok) { list.replaceChildren(empty(`설치 정보를 읽지 못했습니다: ${status.message}`)); return }
+  if (!status.ok) { list.replaceChildren(empty(`설치 정보를 읽지 못했습니다: ${status.message}`)); if (apkBox) apkBox.hidden = true; return }
 
   const current = qaVariantFor(serial)
   list.replaceChildren(...status.variants.map(v => {
@@ -420,14 +423,146 @@ async function renderQaAppPicker() {
     ver.className = 'qa-variant-ver' + (v.installed ? '' : ' missing')
     ver.textContent = v.installed ? `v${v.versionName} (${v.versionCode})` : '설치 안 됨'
     row.append(icon, main, ver)
+    // 고른 뒤에도 창을 닫지 않는다 — 아래 업데이트 APK 영역을 이어서 쓸 수 있게
     row.onclick = () => {
       setQaVariant(serial, v.id)
       syncQaRoleCards(serial)
-      closeQaAppPicker()
       showToast(`QA 대상: ${app.name} · ${v.name} (v${v.versionName})`)
+      renderQaAppPicker()
     }
     return row
   }))
+  await renderQaApkSection(app, serial, token)
+}
+
+// ── 업데이트 테스트용 APK ───────────────────────────────────────
+// 고른 타입에 dev APK 두 개(기존 버전·업데이트)를 등록하고, 이 기기에
+//   ① 기존 버전 설치 (깔린 앱은 지우고 새로 — 데이터 초기화)
+//   ② 업데이트 설치 (덮어 설치 — 데이터 유지)
+// 순서로 설치한다. 등록·판정·설치는 메인(qa:apk-*)이 하고, 여기서는 결과만 그린다.
+const QA_APK_KIND_NAMES = { base: '기존 버전', update: '업데이트' }
+
+function qaEl(tag, cls, text) {
+  const e = document.createElement(tag)
+  if (cls) e.className = cls
+  if (text != null) e.textContent = text
+  return e
+}
+
+function qaButton(icon, label, onclick, opts = {}) {
+  const b = qaEl('button', 'btn-sm' + (opts.primary ? ' primary' : ''))
+  b.type = 'button'
+  b.innerHTML = `<i class="ti ${icon}"></i>`
+  b.append(label)
+  b.onclick = onclick
+  b.disabled = !!opts.disabled
+  if (opts.title) b.title = opts.title
+  return b
+}
+
+const qaVer = x => `v${x.versionName} (${x.versionCode})`
+
+async function renderQaApkSection(app, serial, token) {
+  const box = document.getElementById('qaApkSection')
+  if (!box) return
+  const variant = qaVariantFor(serial)
+  box.hidden = false
+  if (!variant) {
+    box.replaceChildren(qaEl('div', 'qa-apk-title', '업데이트 테스트'),
+      qaEl('div', 'qa-apk-meta', '타입을 고르면 기존 버전·업데이트 APK 를 등록할 수 있습니다'))
+    return
+  }
+  box.replaceChildren(qaEl('div', 'qa-apk-title', `업데이트 테스트 · ${variant.name}`), qaEl('div', 'qa-apk-meta', '확인하는 중...'))
+
+  let status
+  try { status = await window.db.qaApkStatus({ serial, appId: app.id, variantId: variant.id }) } catch (error) {
+    status = { ok: false, message: error.message }
+  }
+  if (token !== qaPickerToken) return
+  const title = qaEl('div', 'qa-apk-title', `업데이트 테스트 · ${variant.name}`)
+  if (!status.ok) { box.replaceChildren(title, qaEl('div', 'qa-apk-check error', status.message)); return }
+
+  const ctx = { appId: app.id, variantId: variant.id, serial, variantName: variant.name }
+  const parts = [title]
+  parts.push(qaEl('div', 'qa-apk-meta',
+    status.installed ? `이 기기에 설치된 버전: ${qaVer(status.installed)}` : `이 기기에는 ${variant.name} 이(가) 설치돼 있지 않습니다`))
+
+  // 기존 버전 → 업데이트 순서로 카드 두 장
+  for (const [i, kind] of [['1', 'base'], ['2', 'update']]) {
+    const apk = status[kind]
+    const card = qaEl('div', 'qa-apk-card')
+    card.append(qaEl('div', 'qa-apk-card-title', `${i}. ${QA_APK_KIND_NAMES[kind]} APK`))
+    if (!apk.registered) {
+      card.append(qaEl('div', 'qa-apk-meta', kind === 'base'
+        ? '업데이트 전 버전(예: 55)의 dev 빌드 APK 를 등록하세요'
+        : '업데이트할 버전(예: 56)의 dev 빌드 APK 를 등록하세요'))
+      const actions = qaEl('div', 'qa-apk-actions')
+      actions.append(qaButton('ti-file-upload', 'APK 등록', () => registerQaApk(ctx, kind), { primary: true }))
+      card.append(actions)
+      parts.push(card)
+      continue
+    }
+    card.append(qaEl('div', 'qa-apk-file', apk.fileName))
+    if (apk.ok) {
+      const mb = (apk.size / 1024 / 1024).toFixed(1)
+      const sign = apk.signer ? `서명 ${apk.signer.scheme} ${apk.signer.hash}` : '서명 정보 없음(v1)'
+      card.append(qaEl('div', 'qa-apk-meta', `${qaVer(apk)} · 최소 SDK ${apk.minSdk ?? '?'} · ${mb}MB · ${sign}`))
+    }
+    card.append(qaEl('div', 'qa-apk-meta qa-apk-path', apk.path))
+    const check = status.checks?.[kind] || (apk.ok ? null : { level: 'error', canInstall: false, message: apk.message })
+    if (check) card.append(qaEl('div', `qa-apk-check ${check.level}`, check.message))
+    const actions = qaEl('div', 'qa-apk-actions')
+    const installLabel = kind === 'base' ? '기존 버전 설치' : '업데이트 설치'
+    const installTitle = kind === 'base'
+      ? (check?.message || '기존 버전을 설치합니다')
+      : '앱 데이터를 유지한 채 덮어 설치합니다 (adb install -r)'
+    actions.append(
+      qaButton(kind === 'base' ? 'ti-player-play' : 'ti-download', installLabel, () => installQaApk(ctx, kind, status), {
+        primary: true, disabled: !check?.canInstall, title: check?.canInstall ? installTitle : (check?.message || ''),
+      }),
+      qaButton('ti-replace', '변경', () => registerQaApk(ctx, kind)),
+      qaButton('ti-trash', '등록 해제', () => unregisterQaApk(ctx, kind)),
+    )
+    card.append(actions)
+    parts.push(card)
+  }
+  // 두 APK 가 한 쌍으로 맞는지 (패키지·서명·버전 순서)
+  if (status.pair) parts.push(qaEl('div', `qa-apk-check ${status.pair.level}`, status.pair.message))
+  box.replaceChildren(...parts)
+}
+
+async function registerQaApk({ appId, variantId, variantName }, kind) {
+  const r = await window.db.qaApkRegister({ appId, variantId, kind })
+  if (r.canceled) return
+  if (!r.ok) { showToast(r.message, true); return }
+  showToast(`${variantName} ${QA_APK_KIND_NAMES[kind]} APK 등록: ${qaVer(r.apk)}`)
+  renderQaAppPicker()
+}
+
+async function unregisterQaApk({ appId, variantId, variantName }, kind) {
+  if (!confirm(`${variantName} 의 ${QA_APK_KIND_NAMES[kind]} APK 등록을 해제할까요? (APK 파일은 지우지 않습니다)`)) return
+  const r = await window.db.qaApkUnregister({ appId, variantId, kind })
+  if (!r.ok) { showToast(r.message, true); return }
+  renderQaAppPicker()
+}
+
+async function installQaApk({ appId, variantId, serial, variantName }, kind, status) {
+  const device = deviceSlots.find(d => d.serial === serial)
+  const where = device ? `기기 ${device.slot}(${device.model || serial})` : serial
+  const apk = status[kind]
+  const from = status.installed ? qaVer(status.installed) : '미설치'
+  // 기존 버전은 판정(action)에 따라 데이터를 지킬 수도, 지워야 할 수도 있다 — 판정 문구를 그대로 보여 준다
+  const baseCheck = status.checks?.base
+  const question = kind === 'base'
+    ? `${where} · ${variantName} 기존 버전 설치\n\n${baseCheck?.message || `${qaVer(apk)} 를 설치합니다`}` +
+      (baseCheck?.action === 'reinstall' ? '\n\n※ 앱 데이터가 지워집니다. 진행할까요?' : '\n\n진행할까요?')
+    : `${where}의 ${variantName}을(를) ${from} → ${qaVer(apk)}(으)로 업데이트합니다.\n앱 데이터는 유지됩니다. 진행할까요?`
+  if (!confirm(question)) return
+  showToast(`${variantName} ${QA_APK_KIND_NAMES[kind]} 설치 중... (최대 몇 분 걸릴 수 있습니다)`, false, true)
+  const r = await window.db.qaApkInstall({ appId, variantId, serial, kind })
+  showToast(r.message, !r.ok)
+  if (document.getElementById('qaAppOverlay')?.classList.contains('open')) renderQaAppPicker()
+  syncQaRoleCards(serial)
 }
 
 function clearQaVariantFromPicker() {

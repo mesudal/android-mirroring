@@ -7,6 +7,7 @@ const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
 const { createDriver } = require('./qa-driver')
 const qaApps = require('./qa-apps')
+const apkInfo = require('./apk-info')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
@@ -416,6 +417,232 @@ ipcMain.handle('qa:app-status', async (_, { serial, appId } = {}) => {
     return { ok: true, appId: app.id, variants }
   } catch (error) {
     return { ok: false, message: String(error?.message || error) }
+  }
+})
+
+// ── 업데이트 테스트용 APK ───────────────────────────────────────
+// 앱 타입마다 dev APK 두 개를 등록한다: 기존 버전(base) · 업데이트 버전(update).
+// 흐름: ① 기존 버전 설치(깔린 앱은 지우고 새로 — 깨끗한 출발점) → 이전 버전에서 확인할 것 확인
+//       → ② 업데이트 설치(adb install -r, 데이터 유지) → 누락·동작 이상 확인.
+// 파일은 복사하지 않고 경로만 기억한다 — 같은 경로에 새로 빌드하면 크기·수정 시각이 바뀐 것을 보고 다시 읽는다.
+//   userData/qa-apks.json = { [appId]: { [variantId]: { base?: entry, update?: entry } } }
+//   entry = { path, size, mtimeMs, info, registeredAt }
+// 이전 형식({ [variantId]: entry } — 업데이트 APK 하나만 있던 것)은 update 로 읽는다.
+const QA_APKS = path.join(app.getPath('userData'), 'qa-apks.json')
+const QA_APK_KINDS = { base: '기존 버전', update: '업데이트' }
+
+function loadQaApks() {
+  try {
+    const data = JSON.parse(fs.readFileSync(QA_APKS, 'utf8'))
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return {}
+    for (const variants of Object.values(data)) {
+      for (const [id, v] of Object.entries(variants || {})) {
+        if (v && v.path) variants[id] = { update: v }   // 이전 형식
+      }
+    }
+    return data
+  } catch { return {} }
+}
+
+function saveQaApks(data) {
+  fs.writeFileSync(QA_APKS, JSON.stringify(data, null, 2))
+}
+
+// 등록 항목을 읽고, 파일이 바뀌었으면 다시 분석해 저장한다. 등록이 없으면 null.
+function qaApkEntry(appId, variantId, kind) {
+  const all = loadQaApks()
+  const entry = all[appId]?.[variantId]?.[kind]
+  if (!entry?.path) return null
+  let stat
+  try { stat = fs.statSync(entry.path) } catch {
+    return { ...entry, missing: true }
+  }
+  if (stat.size !== entry.size || stat.mtimeMs !== entry.mtimeMs) {
+    entry.info = apkInfo.inspectApk(entry.path)
+    entry.size = stat.size
+    entry.mtimeMs = stat.mtimeMs
+    try { saveQaApks(all) } catch { }
+  }
+  return { ...entry, missing: false }
+}
+
+// 렌더러로 보낼 모양 (서명 인증서 지문은 길어서 앞부분만)
+function qaApkView(entry) {
+  if (!entry) return { registered: false }
+  const i = entry.info || {}
+  return {
+    registered: true,
+    path: entry.path,
+    fileName: path.basename(entry.path),
+    missing: !!entry.missing,
+    ok: !!i.ok && !entry.missing,
+    message: entry.missing ? `APK 파일이 없습니다: ${entry.path}` : (i.ok ? '' : (i.message || '')),
+    package: i.package || '',
+    versionCode: i.versionCode ?? null,
+    versionName: i.versionName || '',
+    minSdk: i.minSdk ?? null,
+    size: entry.size,
+    signer: i.signer ? { scheme: i.signer.scheme, hash: i.signer.hash, sha256: i.signer.sha256.slice(0, 16) } : null,
+  }
+}
+
+function qaVariantOrError(appId, variantId) {
+  const variant = qaApps.findVariant(appId, variantId)
+  return variant ? { variant } : { error: { ok: false, message: `등록되지 않은 앱 타입입니다: ${appId}/${variantId}` } }
+}
+
+function qaKindOrError(kind) {
+  return QA_APK_KINDS[kind] ? null : { ok: false, message: `APK 종류가 올바르지 않습니다: ${kind}` }
+}
+
+// 기기에 설치된 버전·서명과 Android SDK
+async function qaInstalledInfo(serial, pkg) {
+  const driver = getQaDriver(serial)
+  const r = await driver.shell(`dumpsys package ${pkg}`)
+  const ver = qaApps.parsePackageVersion(r.out, pkg)
+  const sdk = await driver.sdk()
+  return {
+    installed: ver ? { ...ver, signer: apkInfo.parseDeviceSigner(r.out, pkg) } : null,
+    device: { sdk },
+  }
+}
+
+// 이 기기에 설치할 수 있는지. 기존 버전은 "지우고 새로", 업데이트는 "덮어 설치(데이터 유지)" 기준으로 본다.
+function qaInstallCheck(kind, entry, installed, device, pkg) {
+  if (!entry) return null
+  if (entry.missing) return { level: 'error', canInstall: false, message: `APK 파일이 없습니다: ${entry.path}` }
+  const args = { apk: entry.info, installed, device, expectPkg: pkg }
+  return kind === 'base' ? apkInfo.checkBaseInstall(args) : apkInfo.checkUpdate(args)
+}
+
+// APK 등록. filePath 가 없으면 파일 선택 창을 연다. 다른 패키지의 APK 는 받지 않는다.
+ipcMain.handle('qa:apk-register', async (_, { appId, variantId, kind, filePath } = {}) => {
+  try {
+    const { variant, error } = qaVariantOrError(appId, variantId)
+    if (error) return error
+    const kindError = qaKindOrError(kind)
+    if (kindError) return kindError
+    let file = filePath
+    if (!file) {
+      const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        title: `${variant.name} ${QA_APK_KINDS[kind]} APK 선택`,
+        filters: [{ name: 'APK', extensions: ['apk'] }],
+        properties: ['openFile'],
+      })
+      if (canceled || !filePaths?.length) return { ok: false, canceled: true }
+      file = filePaths[0]
+    }
+    if (typeof file !== 'string' || !/\.apk$/i.test(file)) return { ok: false, message: '.apk 파일만 등록할 수 있습니다' }
+    const info = apkInfo.inspectApk(file)
+    if (!info.ok) return { ok: false, message: info.message }
+    if (info.package !== variant.pkg) {
+      return { ok: false, message: `다른 앱의 APK 입니다 — APK ${info.package}, ${variant.name} 은 ${variant.pkg}` }
+    }
+    const stat = fs.statSync(file)
+    const all = loadQaApks()
+    all[appId] = all[appId] || {}
+    all[appId][variantId] = all[appId][variantId] || {}
+    const entry = { path: file, size: stat.size, mtimeMs: stat.mtimeMs, info, registeredAt: new Date().toISOString() }
+    all[appId][variantId][kind] = entry
+    saveQaApks(all)
+    logMirror(`[QA] ${variant.name} ${QA_APK_KINDS[kind]} APK 등록: ${path.basename(file)} v${info.versionName} (${info.versionCode})`)
+    return { ok: true, apk: qaApkView({ ...entry, missing: false }) }
+  } catch (e) {
+    return { ok: false, message: String(e?.message || e) }
+  }
+})
+
+ipcMain.handle('qa:apk-unregister', async (_, { appId, variantId, kind } = {}) => {
+  try {
+    const kindError = qaKindOrError(kind)
+    if (kindError) return kindError
+    const all = loadQaApks()
+    if (all[appId]?.[variantId]?.[kind]) {
+      delete all[appId][variantId][kind]
+      saveQaApks(all)
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, message: String(e?.message || e) }
+  }
+})
+
+// 등록된 두 APK 의 정보와 짝 검사, serial 이 있으면 그 기기의 설치 상태와 각각의 설치 판정
+ipcMain.handle('qa:apk-status', async (_, { serial, appId, variantId } = {}) => {
+  try {
+    const { variant, error } = qaVariantOrError(appId, variantId)
+    if (error) return error
+    const base = qaApkEntry(appId, variantId, 'base')
+    const update = qaApkEntry(appId, variantId, 'update')
+    const okInfo = e => (e && !e.missing ? e.info : null)
+    const out = {
+      ok: true,
+      base: qaApkView(base),
+      update: qaApkView(update),
+      pair: apkInfo.checkPair(okInfo(base), okInfo(update)),
+    }
+    if (!qaSerialOk(serial) || (!base && !update)) return out
+    const { installed, device } = await qaInstalledInfo(serial, variant.pkg)
+    out.installed = installed
+    out.checks = {
+      base: qaInstallCheck('base', base, installed, device, variant.pkg),
+      update: qaInstallCheck('update', update, installed, device, variant.pkg),
+    }
+    return out
+  } catch (e) {
+    return { ok: false, message: String(e?.message || e) }
+  }
+})
+
+// 등록된 APK 를 기기에 설치한다. 설치 직전에 판정을 다시 해서 안 되는 경우는 거부한다.
+//   update : adb install -r (데이터 유지) — 실제 사용자의 업데이트와 같다
+//   base   : 판정(checkBaseInstall)의 action 대로. 데이터는 지울 수밖에 없을 때만 지운다
+//            install → adb install / upgrade → adb install -r (데이터 유지)
+//            reinstall(더 높은 버전·다른 서명) → adb uninstall(데이터 초기화) 후 adb install
+ipcMain.handle('qa:apk-install', async (_, { serial, appId, variantId, kind } = {}) => {
+  try {
+    if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
+    const { variant, error } = qaVariantOrError(appId, variantId)
+    if (error) return error
+    const kindError = qaKindOrError(kind)
+    if (kindError) return kindError
+    const label = `${variant.name} ${QA_APK_KINDS[kind]}`
+    const entry = qaApkEntry(appId, variantId, kind)
+    if (!entry) return { ok: false, message: `등록된 ${QA_APK_KINDS[kind]} APK 가 없습니다` }
+    const before = await qaInstalledInfo(serial, variant.pkg)
+    const check = qaInstallCheck(kind, entry, before.installed, before.device, variant.pkg)
+    if (!check.canInstall) return { ok: false, message: check.message }
+
+    const driver = getQaDriver(serial)
+    const failReason = r => {
+      const out = `${r.out || ''}\n${r.message || ''}`.trim()
+      return (/Failure \[([^\]]+)\]/.exec(out) || [])[1] || out.split('\n').pop() || '알 수 없는 오류'
+    }
+    const uninstallFirst = kind === 'base' && check.action === 'reinstall'
+    if (uninstallFirst) {
+      logMirror(`[QA] ${serial} ${variant.name} 삭제 — ${check.message}`)
+      const u = await driver.exec(['uninstall', variant.pkg], { timeout: 2 * 60 * 1000 })
+      if (!u.ok || !/Success/.test(`${u.out}${u.message}`)) {
+        logMirror(`[QA] ${variant.name} 삭제 실패: ${failReason(u)}`)
+        return { ok: false, message: `기존 앱 삭제 실패: ${failReason(u)}` }
+      }
+    }
+    logMirror(`[QA] ${serial} ${label} 설치 시작: ${path.basename(entry.path)}`)
+    const keepData = kind === 'update' || check.action === 'upgrade'
+    const args = keepData ? ['install', '-r', entry.path] : ['install', entry.path]
+    const r = await driver.exec(args, { timeout: 5 * 60 * 1000 })
+    if (!r.ok || !/Success/.test(`${r.out || ''}${r.message || ''}`)) {
+      logMirror(`[QA] ${label} 설치 실패: ${failReason(r)}`)
+      // 기존 버전은 이미 앱을 지웠을 수 있다 — 그 사실도 같이 알린다
+      const removed = uninstallFirst ? ' (설치돼 있던 앱은 이미 삭제됐습니다)' : ''
+      return { ok: false, message: `설치 실패: ${failReason(r)}${removed}` }
+    }
+    const after = await qaInstalledInfo(serial, variant.pkg)
+    const ver = i => (i ? `v${i.versionName} (${i.versionCode})` : '미설치')
+    logMirror(`[QA] ${label} 설치 완료: ${ver(before.installed)} → ${ver(after.installed)}`)
+    return { ok: true, message: `${label} 설치 완료: ${ver(before.installed)} → ${ver(after.installed)}`, before: before.installed, after: after.installed }
+  } catch (e) {
+    return { ok: false, message: String(e?.message || e) }
   }
 })
 

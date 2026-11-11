@@ -745,3 +745,20 @@ input[type="range"]::-webkit-slider-thumb:hover {
 .tool-body .qa-app-card { padding:10px; margin:0; }
 .qa-app-card .ctrl-title { margin-bottom:5px; }
 .qa-app-card select { width:100%; margin-top:0; }
+
+/* ── 업데이트 APK (앱 선택 창 아래) ──────────────────────────── */
+.qa-apk-section { margin-top:14px; padding-top:12px; border-top:1px solid var(--border); display:flex; flex-direction:column; gap:8px; }
+.qa-apk-title { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); }
+.qa-apk-file { font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+.qa-apk-meta { font:11px/1.4 ui-monospace,monospace; color:var(--muted); overflow-wrap:anywhere; }
+.qa-apk-check { font-size:12px; line-height:1.45; padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--border);
+  background:var(--surface2); overflow-wrap:anywhere; }
+.qa-apk-check.ok { color:var(--accent2); border-color:var(--accent2); }
+.qa-apk-check.warn { color:var(--amber); border-color:var(--amber); }
+.qa-apk-check.error { color:var(--red); border-color:var(--red); }
+.qa-apk-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.qa-apk-card { display:flex; flex-direction:column; gap:6px; padding:10px 12px; border:1px solid var(--border);
+  border-radius:var(--radius-sm); background:var(--surface2); }
+.qa-apk-card-title { font-size:12px; font-weight:600; }
+.qa-apk-path { font-size:10px; opacity:.8; }
+.qa-apk-actions .btn-sm:disabled { opacity:.45; cursor:not-allowed; }
