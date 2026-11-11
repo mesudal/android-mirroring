@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('db', {
   // 기기
   getDevices: () => ipcRenderer.invoke('adb:devices'),
   qaPackages: (serial) => ipcRenderer.invoke('qa:packages', serial),
+  qaApps: () => ipcRenderer.invoke('qa:apps'),
+  qaAppStatus: (opts) => ipcRenderer.invoke('qa:app-status', opts),
   qaInspect: (serial) => ipcRenderer.invoke('qa:inspect', serial),
   qaTap: (opts) => ipcRenderer.invoke('qa:tap', opts),
   connect: (ip, port) => ipcRenderer.invoke('adb:connect', ip, port),

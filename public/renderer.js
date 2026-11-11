@@ -43,6 +43,7 @@ function createDeviceState(slot) {
 }
 
 const deviceSlots = [createDeviceState('A'), createDeviceState('B'), createDeviceState('C')]
+let qaBadgesReady = false   // QA 대상 앱 목록을 받은 뒤 true (updateDevicePanels 참고)
 let activeDevice = deviceSlots[0]
 let mirrorLogListenerRegistered = false
 let dualLogTab = 'mirror'
@@ -143,6 +144,9 @@ function updateDevicePanels() {
     addButton.disabled = full
     addButton.title = full ? '최대 3대까지 연결할 수 있습니다' : '연결할 Android 기기를 추가합니다'
   }
+  // QA 앱 상태는 아래쪽에서 let 으로 선언된다. 이 함수는 스크립트 로드 중에도 불리므로
+  // 그때 건드리면 TDZ 예외로 스크립트 전체가 죽는다 — 앱 목록을 받은 뒤에만 그린다.
+  if (qaBadgesReady) renderQaAppBadges()
 }
 
 function addDevicePanel() {
@@ -251,11 +255,206 @@ function switchPage(id, el) {
 
 // ── QA 기기·앱 선택과 화면 요소 확인 ────────────────────────────
 const QA_ROLES = ['A', 'B', 'C']
-const QA_PACKAGE_LABELS = {
-  'net.zerotalk.free': '무료용',
-  'net.zerotalk.user': '단체용 사용자',
-  'net.zerotalk.admin': '단체용 관리자',
+// ── QA 대상 앱 ──────────────────────────────────────────────────
+// 앱 목록(앱 → 타입 → 패키지)은 메인의 src/qa-apps.js 가 원본이다.
+// 고른 앱은 하나(전역)이고, 타입은 기기마다 다르다 — 무료용 기기와 관리자 기기를 함께 쓰는 항목이 있다.
+// 타입은 슬롯(A/B/C)이 아니라 기기 시리얼에 묶는다. 그래서 왼쪽 메뉴에서 고르든
+// QA 탭의 역할 카드에서 고르든 같은 값을 보고, 기기를 다른 슬롯에 다시 꽂아도 유지된다.
+//   db_qa_target = { appId, variants: { [appId]: { [serial]: variantId } } }
+let qaAppList = []
+let qaAppsPromise = null
+let qaTarget = loadQaTarget()
+let qaPickerSerial = ''
+let qaPickerToken = 0
+
+function loadQaTarget() {
+  try {
+    const t = JSON.parse(localStorage.getItem('db_qa_target') || '{}')
+    const variants = t && typeof t.variants === 'object' && !Array.isArray(t.variants) ? t.variants : {}
+    return { appId: typeof t?.appId === 'string' ? t.appId : '', variants }
+  } catch { return { appId: '', variants: {} } }
 }
+
+function saveQaTarget() {
+  try { localStorage.setItem('db_qa_target', JSON.stringify(qaTarget)) } catch (error) {
+    console.warn('QA 대상 앱 설정을 저장하지 못했습니다:', error)
+  }
+}
+
+async function ensureQaApps() {
+  if (qaAppList.length) return qaAppList
+  if (!qaAppsPromise) {
+    qaAppsPromise = window.db.qaApps().then(r => {
+      qaAppList = r?.ok && Array.isArray(r.apps) ? r.apps : []
+      if (!qaAppList.some(app => app.id === qaTarget.appId)) qaTarget.appId = qaAppList[0]?.id || ''
+    }).finally(() => { qaAppsPromise = null })
+  }
+  await qaAppsPromise
+  return qaAppList
+}
+
+function qaCurrentApp() {
+  return qaAppList.find(app => app.id === qaTarget.appId) || null
+}
+
+function qaVariantFor(serial) {
+  const app = qaCurrentApp()
+  const id = app && serial ? qaTarget.variants[app.id]?.[serial] : ''
+  return app?.variants.find(v => v.id === id) || null
+}
+
+function setQaVariant(serial, variantId) {
+  const app = qaCurrentApp()
+  if (!app || !serial) return
+  const bySerial = qaTarget.variants[app.id] || (qaTarget.variants[app.id] = {})
+  if (variantId) bySerial[serial] = variantId
+  else delete bySerial[serial]
+  saveQaTarget()
+  renderQaAppBadges()
+}
+
+// 기기 패널 머리의 "제로톡 · 무료용" 표시와 왼쪽 메뉴 버튼 강조
+function renderQaAppBadges() {
+  const app = qaCurrentApp()
+  for (const device of deviceSlots) {
+    const badge = slotElement(device, 'qaAppBadge')
+    const button = slotElement(device, 'qaAppButton')
+    const variant = device.serial ? qaVariantFor(device.serial) : null
+    if (badge) {
+      badge.hidden = !variant
+      badge.textContent = variant ? `${app.name} · ${variant.name}` : ''
+    }
+    if (button) {
+      button.classList.toggle('active', !!variant)
+      button.title = variant ? `QA 대상 앱: ${app.name} · ${variant.name}` : 'QA 대상 앱 선택'
+    }
+  }
+}
+
+async function selectQaApp(appId) {
+  await ensureQaApps()
+  if (!qaAppList.some(app => app.id === appId)) return
+  qaTarget.appId = appId
+  saveQaTarget()
+  renderQaAppBadges()
+  renderQaAppSelect()
+  await Promise.all(QA_ROLES.map(renderQaPackageSelect))
+}
+
+function renderQaAppSelect() {
+  const select = document.getElementById('qaAppSelect')
+  if (!select) return
+  select.replaceChildren(...qaAppList.map(app => new Option(app.name, app.id)))
+  select.value = qaTarget.appId
+  select.disabled = qaAppList.length < 2
+}
+
+// 왼쪽 메뉴의 앱 버튼 — 지금 활성 슬롯의 기기에 대해 연다
+async function openQaAppPicker() {
+  const device = activeDevice
+  if (!device?.serial) { showToast('기기를 먼저 연결해 주세요', true); return }
+  await ensureQaApps()
+  if (!qaAppList.length) { showToast('등록된 QA 앱이 없습니다', true); return }
+  qaPickerSerial = device.serial
+  const label = document.getElementById('qaAppPickerDevice')
+  if (label) label.textContent = `기기 ${device.slot} · ${device.model || device.serial} — 이 기기에서 테스트할 앱 타입을 고르세요`
+  document.getElementById('qaAppOverlay')?.classList.add('open')
+  await renderQaAppPicker()
+}
+
+function closeQaAppPicker() {
+  qaPickerToken++
+  document.getElementById('qaAppOverlay')?.classList.remove('open')
+  // 다른 기기로 다시 열었을 때 이전 기기의 목록(과 그 기기를 가리키는 클릭 핸들러)이 남지 않게
+  document.getElementById('qaVariantList')?.replaceChildren()
+}
+
+async function renderQaAppPicker() {
+  const options = document.getElementById('qaAppOptions')
+  const list = document.getElementById('qaVariantList')
+  if (!options || !list) return
+  const app = qaCurrentApp()
+  options.replaceChildren(...qaAppList.map(a => {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.className = 'qa-app-option' + (a.id === qaTarget.appId ? ' active' : '')
+    b.setAttribute('role', 'radio')
+    b.setAttribute('aria-checked', String(a.id === qaTarget.appId))
+    b.textContent = a.name
+    b.onclick = async () => { await selectQaApp(a.id); renderQaAppPicker() }
+    return b
+  }))
+  const empty = text => { const d = document.createElement('div'); d.className = 'qa-picker-empty'; d.textContent = text; return d }
+  if (!app) { list.replaceChildren(empty('등록된 QA 앱이 없습니다')); return }
+
+  const token = ++qaPickerToken
+  const serial = qaPickerSerial
+  list.replaceChildren(empty('기기에 설치된 버전을 확인하는 중...'))
+  let status
+  try { status = await window.db.qaAppStatus({ serial, appId: app.id }) } catch (error) {
+    status = { ok: false, message: error.message }
+  }
+  if (token !== qaPickerToken) return   // 그 사이 다른 앱을 눌렀거나 창을 닫았다
+  if (!status.ok) { list.replaceChildren(empty(`설치 정보를 읽지 못했습니다: ${status.message}`)); return }
+
+  const current = qaVariantFor(serial)
+  list.replaceChildren(...status.variants.map(v => {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = 'qa-variant' + (current?.id === v.id ? ' active' : '')
+    row.disabled = !v.installed
+    row.setAttribute('role', 'radio')
+    row.setAttribute('aria-checked', String(current?.id === v.id))
+    const icon = document.createElement('i')
+    icon.className = current?.id === v.id ? 'ti ti-circle-check-filled' : 'ti ti-circle'
+    const main = document.createElement('span')
+    main.className = 'qa-variant-main'
+    const name = document.createElement('span')
+    name.className = 'qa-variant-name'
+    name.textContent = v.name
+    const pkg = document.createElement('span')
+    pkg.className = 'qa-variant-pkg'
+    pkg.textContent = v.pkg
+    main.append(name, pkg)
+    const ver = document.createElement('span')
+    ver.className = 'qa-variant-ver' + (v.installed ? '' : ' missing')
+    ver.textContent = v.installed ? `v${v.versionName} (${v.versionCode})` : '설치 안 됨'
+    row.append(icon, main, ver)
+    row.onclick = () => {
+      setQaVariant(serial, v.id)
+      syncQaRoleCards(serial)
+      closeQaAppPicker()
+      showToast(`QA 대상: ${app.name} · ${v.name} (v${v.versionName})`)
+    }
+    return row
+  }))
+}
+
+function clearQaVariantFromPicker() {
+  setQaVariant(qaPickerSerial, '')
+  syncQaRoleCards(qaPickerSerial)
+  renderQaAppPicker()
+}
+
+function openQaTabFromPicker() {
+  closeQaAppPicker()
+  const tab = document.querySelector('.tool-tab[onclick*="\'qa\'"]')
+  if (!document.querySelector('.tool-col')?.classList.contains('visible')) toggleToolDrawer()
+  switchPage('qa', tab)
+  loadQaSetup()
+}
+
+// 왼쪽 메뉴에서 바꾼 값을, 같은 기기를 쓰는 QA 탭 역할 카드에도 반영한다
+function syncQaRoleCards(serial) {
+  for (const role of QA_ROLES) {
+    if (qaRoleCard(role)?.querySelector('.qa-device-select')?.value === serial) renderQaPackageSelect(role)
+  }
+}
+
+// 시작할 때 앱 목록을 한 번 받아 둔다 — 그래야 기기를 연결하자마자 패널 머리에 대상 앱이 보인다
+ensureQaApps().then(() => { qaBadgesReady = true; renderQaAppBadges() })
+  .catch(error => console.warn('QA 앱 목록을 받지 못했습니다:', error))
+
 let qaAssignments = loadQaAssignments()
 let qaDevices = []
 let qaElements = []
@@ -288,7 +487,12 @@ function renderQaDeviceSelect(role) {
   for (const device of qaDevices) {
     select.add(new Option(`${device.model} · ${device.serial}`, device.serial))
   }
-  if (qaDevices.some(device => device.serial === assigned.serial)) select.value = assigned.serial
+  // 역할을 아직 정하지 않았으면 같은 글자의 화면 슬롯에 연결된 기기를 기본으로 쓴다
+  // (기기 A 화면 왼쪽 메뉴에서 앱을 고르면 그대로 역할 A 로 이어지게)
+  const slotSerial = deviceSlots.find(device => device.slot === role)?.serial
+  const preferred = qaDevices.some(device => device.serial === assigned.serial) ? assigned.serial
+    : qaDevices.some(device => device.serial === slotSerial) ? slotSerial : ''
+  if (preferred) select.value = preferred
   select.onchange = async () => {
     qaAssignments[role] = { serial: select.value, pkg: '' }
     saveQaAssignments()
@@ -305,28 +509,41 @@ async function renderQaPackageSelect(role) {
   select.replaceChildren(new Option(serial ? '설치된 앱 조회 중...' : '기기를 먼저 선택하세요', ''))
   if (!serial) return
 
+  await ensureQaApps()
+  const app = qaCurrentApp()
+  if (!app) { select.replaceChildren(new Option('등록된 QA 앱이 없습니다', '')); return }
   let result
-  try { result = await window.db.qaPackages(serial) } catch (error) {
-    if (card.querySelector('.qa-device-select').value !== serial) return
-    select.replaceChildren(new Option('앱 목록을 불러오지 못했습니다', ''))
-    return `역할 ${role}: ${error.message}`
+  try { result = await window.db.qaAppStatus({ serial, appId: app.id }) } catch (error) {
+    result = { ok: false, message: error.message }
   }
-  if (card.querySelector('.qa-device-select').value !== serial) return
+  // 그 사이 기기나 앱을 바꿨으면 이 결과는 버린다
+  if (card.querySelector('.qa-device-select').value !== serial || qaCurrentApp() !== app) return
   if (!result.ok) {
     select.replaceChildren(new Option('앱 목록을 불러오지 못했습니다', ''))
     return `역할 ${role}: ${result.message}`
   }
-  const packages = result.packages.filter(name => name.startsWith('net.zerotalk.'))
-  select.replaceChildren(new Option(packages.length ? '앱 변형 선택' : '제로톡 앱이 없습니다', ''))
-  for (const name of packages) {
-    select.add(new Option(`${QA_PACKAGE_LABELS[name] || name} · ${name}`, name))
+  const installed = result.variants.filter(v => v.installed)
+  select.replaceChildren(new Option(installed.length ? `${app.name} 타입 선택` : `${app.name}이(가) 설치돼 있지 않습니다`, ''))
+  for (const v of result.variants) {
+    const label = v.installed ? `${v.name} · v${v.versionName} (${v.versionCode})` : `${v.name} · 설치 안 됨`
+    const option = new Option(label, v.pkg)
+    option.disabled = !v.installed
+    select.add(option)
   }
-  select.disabled = packages.length === 0
-  const assigned = qaAssignments[role] || {}
-  if (packages.includes(assigned.pkg)) select.value = assigned.pkg
+  select.disabled = installed.length === 0
+  const chosen = qaVariantFor(serial)
+  if (chosen && installed.some(v => v.id === chosen.id)) select.value = chosen.pkg
+  qaAssignments[role] = { serial, pkg: select.value }
+  saveQaAssignments()
   select.onchange = () => {
+    const variant = result.variants.find(v => v.pkg === select.value)
+    setQaVariant(serial, variant?.id || '')
     qaAssignments[role] = { serial, pkg: select.value }
     saveQaAssignments()
+    // 같은 기기를 다른 역할에도 배정했으면 그쪽도 맞춘다
+    for (const other of QA_ROLES) {
+      if (other !== role && qaRoleCard(other)?.querySelector('.qa-device-select')?.value === serial) renderQaPackageSelect(other)
+    }
   }
   return null
 }
@@ -334,7 +551,9 @@ async function renderQaPackageSelect(role) {
 async function loadQaSetup() {
   if (qaLoadPromise) return qaLoadPromise
   qaLoadPromise = (async () => {
-    setQaStatus('연결된 기기와 설치된 제로톡 앱을 확인하는 중...')
+    setQaStatus('연결된 기기와 설치된 앱을 확인하는 중...')
+    await ensureQaApps()
+    renderQaAppSelect()
     qaDevices = await window.db.getDevices()
     for (const role of QA_ROLES) renderQaDeviceSelect(role)
     const packageErrors = (await Promise.all(QA_ROLES.map(renderQaPackageSelect))).filter(Boolean)

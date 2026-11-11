@@ -98,6 +98,10 @@ Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF
 
 QA 화면 확인은 `src/qa-driver.js` 가 ADB UIAutomator XML을 읽고 `src/qa-xml.js` 가 접근성 요소와 좌표를 파싱한다. 렌더러의 QA 탭은 역할별 기기·앱 변형을 선택하고 화면 요소를 확인·탭한다(좌표 탭, 글자로 누르기). 현재 단계에는 시나리오 실행기와 결과 보고가 포함되지 않는다.
 
+- **QA 대상 앱 목록은 `src/qa-apps.js` 의 `QA_APPS` 한 곳이다.** 앱 → 타입 → 패키지 구조이고(제로톡 = 무료용 `net.zerotalk.free` / 단체용 사용자 `net.zerotalk.user` / 단체용 관리자 `net.zerotalk.admin`), 새 앱은 여기에 항목만 추가하면 좌측 메뉴의 앱 선택 창과 QA 탭이 그대로 그린다. `validateApps()` 자가진단이 id·패키지 중복을 잡는다. 렌더러는 `qa:apps` 로 받는다.
+- **고른 앱은 전역 하나, 타입은 기기 시리얼마다다** (`localStorage` `db_qa_target` = `{ appId, variants: { [appId]: { [serial]: variantId } } }`). 슬롯(A/B/C)이 아니라 시리얼에 묶어서, 기기 화면 왼쪽 메뉴(`openQaAppPicker()`)와 QA 탭 역할 카드가 같은 값을 보고 서로 반영한다. QA 탭 역할 카드는 저장된 배정이 없으면 같은 글자 슬롯의 기기를 기본으로 잡는다.
+- `qa:app-status` 는 타입별 설치 여부와 버전을 `dumpsys package <pkg>` 로 읽는다. **`dumpsys package --user 0 <pkg>` 는 패키지 인자를 무시하고 전체를 쏟아낸다** — 붙이지 말 것. 출력에는 다른 패키지 블록도 섞이므로 `parsePackageVersion()` 이 `Package [<pkg>]` 블록 안에서만 읽는다.
+- `updateDevicePanels()` 는 스크립트 로드 중에도 불린다. 그 안에서 아래쪽 `let` 상태(QA 등)를 건드리면 TDZ 예외로 렌더러 전체가 죽는다 — `qaBadgesReady` 같은 위쪽 플래그로 막는다.
 - **드라이버는 기기 1대당 하나다** (`createDriver({ adb, serial })`, `main.js` 의 `getQaDriver()` 가 캐시). 드라이버가 그 기기의 adb 명령 큐를 들고 있어 같은 기기 명령은 순서대로, 다른 기기는 병렬로 돈다. 모든 메서드는 예외 대신 `{ ok, message }` 를 돌려준다.
 - **제로톡(`net.zerotalk.free`)은 Flutter 다.** 글자가 `text` 가 아니라 `content-desc` 로 오고 `resource-id` 는 전부 비어 있다(SM-G986N / Android 13 실측). 그래서 `text` · `textContains` · `textMatches` 셀렉터는 **둘 다** 본다. `{ id: ... }` 셀렉터는 이 앱에서 쓸 수 없다.
 - 셀렉터 종류와 검증은 `qa-xml.js` 의 `SELECTOR_KEYS` / `selectorError()` 한 곳이다. 넓이 0 노드(`[0,0][0,0]`)는 매칭에서 빠진다.
@@ -121,7 +125,7 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 - **창 최소 크기와 시작 크기는 별개다.** `pickLaunchSize()` 는 화면 작업 영역에 맞춘 시작 크기만 정하고, 창은 최소 `720×320` 까지 줄일 수 있다. `window:set-min-size` 는 필요한 경우 최소 너비를 더 올릴 수 있지만, 시작 크기를 하한으로 삼지 않는다.
 - **바이너리 경로는 `resolveBin()` 을 통해서만 얻는다.** `bin/` → macOS/Linux 표준 경로(`/opt/homebrew/bin` 등) → `where`/`which` 순으로 탐색한다. macOS GUI 실행 시 `$PATH` 가 비어 있는 문제 때문에 필요한 로직이다. 패키징 상태에서 `resourcesPath/bin` 이 쓰기 불가면 `userData/bin` 으로 복사 후 전환한다 (`main.js` 상단).
 - **`spawn` 하는 곳에는 `proc.on('error')` 를 반드시 단다.** 핸들러가 없으면 spawn 실패가 처리되지 않은 이벤트로 올라와 메인 프로세스가 통째로 죽는다.
-- UI 설정값은 `localStorage` 에 `db_` 접두사로 저장한다: `db_screen_width`, `db_bitrate`, `db_fps`, `db_theme`, `db_logcat_font`, `db_log_app_only`, `db_tools_collapsed`, `db_jira_draft`, `db_jira_pins`, `db_jira_projects`.
+- UI 설정값은 `localStorage` 에 `db_` 접두사로 저장한다: `db_screen_width`, `db_bitrate`, `db_fps`, `db_theme`, `db_logcat_font`, `db_log_app_only`, `db_tools_collapsed`, `db_jira_draft`, `db_jira_pins`, `db_jira_projects`, `db_qa_roles`, `db_qa_target`.
 
 ## 빌드 / 배포
 

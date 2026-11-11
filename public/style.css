@@ -717,3 +717,31 @@ input[type="range"]::-webkit-slider-thumb:hover {
   -webkit-user-select: text;
   cursor: text;
 }
+
+/* ── QA 대상 앱 선택 (좌측 메뉴 → 모달) ─────────────────────────── */
+.qa-app-badge { flex:0 1 auto; min-width:0; max-width:180px; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:600;
+  color:var(--accent); background:var(--accent-dim); border:1px solid var(--accent); cursor:pointer;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.qa-app-badge:hover { opacity:.85; }
+.qa-app-badge.missing { color:var(--amber); border-color:var(--amber); background:transparent; }
+.qa-app-options { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
+.qa-app-option { padding:7px 14px; border-radius:var(--radius-sm); font-size:13px; font-weight:600; cursor:pointer;
+  color:var(--text); background:var(--surface2); border:1px solid var(--border2); }
+.qa-app-option:hover, .qa-app-option.active { border-color:var(--accent); color:var(--accent); background:var(--accent-dim); }
+.qa-variant-list { display:flex; flex-direction:column; gap:6px; min-height:60px; }
+.qa-variant { display:flex; align-items:center; gap:10px; width:100%; padding:10px 12px; text-align:left; cursor:pointer;
+  color:var(--text); background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); }
+.qa-variant:hover:not(:disabled), .qa-variant.active { border-color:var(--accent); background:var(--accent-dim); }
+.qa-variant:disabled { opacity:.5; cursor:not-allowed; }
+.qa-variant i { font-size:16px; color:var(--muted); }
+.qa-variant.active i { color:var(--accent); }
+.qa-variant-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.qa-variant-name { font-size:13px; font-weight:600; }
+.qa-variant-pkg { font:11px/1.3 ui-monospace,monospace; color:var(--muted); overflow-wrap:anywhere; }
+.qa-variant-ver { flex:0 0 auto; font-size:11px; color:var(--muted); text-align:right; }
+.qa-variant-ver.missing { color:var(--amber); }
+.qa-picker-empty { font-size:12px; color:var(--muted); text-align:center; padding:14px 0; }
+.qa-picker-actions { display:flex; justify-content:space-between; gap:8px; margin-top:12px; }
+.tool-body .qa-app-card { padding:10px; margin:0; }
+.qa-app-card .ctrl-title { margin-bottom:5px; }
+.qa-app-card select { width:100%; margin-top:0; }
