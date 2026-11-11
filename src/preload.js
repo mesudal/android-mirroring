@@ -16,6 +16,35 @@ contextBridge.exposeInMainWorld('db', {
   qaApkInstall: (opts) => ipcRenderer.invoke('qa:apk-install', opts),
   qaInspect: (serial) => ipcRenderer.invoke('qa:inspect', serial),
   qaTap: (opts) => ipcRenderer.invoke('qa:tap', opts),
+
+  // QA 자동 진행 — 계정 비밀번호는 메인에만 있고 여기로 돌아오지 않는다 (hasPassword 만)
+  qaAccountsLoad: () => ipcRenderer.invoke('qa:accounts-load'),
+  qaAccountsSave: (acc) => ipcRenderer.invoke('qa:accounts-save', acc),
+  qaAccountsDelete: (key) => ipcRenderer.invoke('qa:accounts-delete', key),
+  qaChecklist: (appId) => ipcRenderer.invoke('qa:checklist', appId),
+  qaChecklistImport: (opts) => ipcRenderer.invoke('qa:checklist-import', opts),
+  qaScenarios: (appId) => ipcRenderer.invoke('qa:scenarios', appId),
+  qaScenarioFolder: (appId) => ipcRenderer.invoke('qa:scenario-folder', appId),
+  qaRunPreview: (opts) => ipcRenderer.invoke('qa:run-preview', opts),
+  qaRun: (opts) => ipcRenderer.invoke('qa:run', opts),
+  qaStop: () => ipcRenderer.invoke('qa:stop'),
+  qaAnswer: (opts) => ipcRenderer.invoke('qa:answer', opts),
+  qaStatus: () => ipcRenderer.invoke('qa:status'),
+  qaRuns: (opts) => ipcRenderer.invoke('qa:runs', opts),
+  qaRunDetail: (runId) => ipcRenderer.invoke('qa:run-detail', runId),
+  qaEvidenceOpen: (opts) => ipcRenderer.invoke('qa:evidence-open', opts),
+  qaLinkJira: (opts) => ipcRenderer.invoke('qa:link-jira', opts),
+  qaExport: (runId) => ipcRenderer.invoke('qa:export', runId),
+  // 중복 리스너 방지: 항상 기존 리스너 제거 후 새로 등록
+  onQaProgress: (cb) => {
+    ipcRenderer.removeAllListeners('qa:progress')
+    ipcRenderer.on('qa:progress', (_, e) => cb(e))
+  },
+  onQaPrompt: (cb) => {
+    ipcRenderer.removeAllListeners('qa:prompt')
+    ipcRenderer.on('qa:prompt', (_, e) => cb(e))
+  },
+
   connect: (ip, port) => ipcRenderer.invoke('adb:connect', ip, port),
   disconnect: (target) => ipcRenderer.invoke('adb:disconnect', target),
 

@@ -97,7 +97,55 @@ brew install android-platform-tools
 
 **누르기** 입력란에 버튼 글자를 넣으면 화면을 다시 읽어 그 글자의 요소를 찾아 누릅니다. 완전히 같은 글자가 없으면 그 글자를 포함하는 요소를 누릅니다.
 
-현재 제공되는 것은 화면 구조를 확인하기 위한 기반 기능입니다. 시나리오 실행, 계정 관리, 실행 결과 보고 및 Jira 연동은 아직 구현되지 않았습니다.
+이 화면 요소 목록은 시나리오를 쓸 때 셀렉터(글자·ID)를 찾는 용도로도 씁니다.
+
+## QA 자동 진행
+
+QA 탭에서 체크리스트를 가져와 항목을 차례로 실행하고, 회차별로 결과를 남깁니다.
+
+**1. 체크리스트 가져오기** — 구글 시트의 체크리스트 탭(예: `v56`)을 **파일 → 다운로드 → CSV** 로 받아 **CSV 가져오기**. 항목 ID(`ZRT_AAA_001` 형태)가 있는 열을 찾아 대분류·중분류·테스트 항목·사전 조건·절차·기대 결과·플랫폼·중요도를 읽습니다(제목 줄·병합 셀이 있어도 됩니다). 앱마다 하나이고, 다시 가져오면 바뀝니다.
+
+**2. 시나리오** — 항목을 자동으로 돌리려면 그 항목 ID 로 시나리오(JSON)를 씁니다. **시나리오 폴더** 버튼이 여는 폴더에 넣으면 앱을 다시 빌드하지 않아도 바로 읽습니다. 시나리오가 없는 항목은 실행 중에 체크리스트의 절차·기대 결과를 띄워 사람이 Pass/Fail 을 고릅니다.
+
+```json
+{
+  "id": "ZRT_CAA_008", "mode": "auto", "roles": ["A", "B"],
+  "pre":   [{ "use": "이메일 로그인", "devs": ["A", "B"] }],
+  "steps": [
+    { "dev": "B", "do": "longPress", "sel": { "desc": "PTT" }, "ms": 3000 },
+    { "dev": "A", "expect": "visible", "sel": { "textContains": "수신중" }, "timeout": 5000 }
+  ],
+  "teardown": []
+}
+```
+
+- 동작: `tap` `longPress` `tapAt` `swipe` `scrollTo` `type` `key` `launch` `stop` `clearData` `sleep` `adb` `network` `screenOff` `screenOn` `openNotifications` `closeNotifications` `permission` `overlay` `location` `snapshot`
+- 판정: `visible` `gone` `activity` `appRunning` `appNotRunning` `audioPlaying` `audioSilent` `count` `sameAsSnapshot`
+- 흐름: `parallel`(동시에), `prompt`(사람 확인 후 계속), `ask`(사람 판정), `use`(공통 절차). `"optional": true` 단계는 안 나와도 건너뜁니다
+- 셀렉터: `text` `textContains` `textMatches` `desc` `id` `class` `index` `xy` (제로톡은 글자가 설명(content-desc)으로 와서 `text` 계열이 둘 다 봅니다)
+- 변수: `$account.id` `$account.password` (그 기기의 테스트 계정), `$accounts.B.id`
+- `mode`: `auto` / `semi`(중간에 사람 개입) / `manual`(사전 상태만 자동, 판정은 사람). `variants`: 해당 앱 타입만. `update`: 업데이트 테스트에서 `before` / `after` / `both`
+- 앱에 들어 있는 공통 절차(`qa/scenarios/zerotalk/_common.json`): **처음 실행 동의·권한 통과**, **앱 최초 설치 상태로 실행**, **이메일 로그인**
+
+**3. 테스트 계정** — **테스트 계정** 에서 등록하고 역할 카드마다 고릅니다. 비밀번호는 이 PC 에 암호화해 두고 화면·로그·결과에 남기지 않습니다.
+
+**4. 실행 범위**
+
+| 범위 | 무엇을 돌리나 |
+|---|---|
+| **기본** | 지난 Fail·Blocked + 자동 시나리오 항목 전체 + 아직 안 돌린 항목. 지난 Pass 인 사람 판정 항목만 뺍니다 (자동 항목은 사람 시간이 안 드니 회귀 확인용으로 다시 돌립니다) |
+| 지난 Fail·Blocked 만 | 수정 확인만 빠르게 |
+| 전체 | 최종 릴리스 전 |
+| 직접 고른 항목 | **항목 보기** 에서 체크한 것 |
+
+"지난 결과" 는 같은 앱·타입에서 그 항목이 가장 최근에 실행된 결과입니다. 지난 Pass 인 사람 판정 항목도 중요도 5(또는 4 이상)는 포함하게 할 수 있습니다.
+
+**5. 업데이트 테스트로 실행** — 체크하면 기존 버전 설치 → `update: "before"` 항목(데이터 만들기, `snapshot` 으로 화면 글자 저장) → 업데이트 설치(데이터 유지) → 나머지 항목(`sameAsSnapshot` 으로 업데이트 전과 비교) 순서로 돌립니다. 앱 선택 창에 기존 버전·업데이트 APK 가 둘 다 등록돼 있어야 합니다.
+
+**6. 결과** — 회차마다 기록되고, 항목마다 지난 결과와 비교해 **수정 확인**(지난 Fail → Pass), **회귀**(지난 Pass → Fail, 빨간 줄), **미해결**(Fail → Fail) 을 표시합니다. 실패 항목은 그 순간의 스크린샷·화면 구조와 그 항목 동안의 logcat 이 남고, **Jira 등록** 을 누르면 사전 조건·절차·기대·실제 결과와 증거 파일을 채운 등록 창이 열립니다(확인 후 직접 등록). 등록한 티켓 번호는 다음 회차 결과에도 이어서 보입니다. **시트용 CSV 내보내기** 는 체크리스트 순서대로 `ID, 결과, 버그 내용` 을 만듭니다(이번에 안 돌린 항목은 지난 결과로 채웁니다).
+
+- 실행 중에는 기기를 직접 조작하지 마세요. **중단** 하면 지금 단계와 정리(teardown)를 마치고 멈춥니다. 시나리오가 끈 네트워크는 정리 단계가 켜지 않았어도 다시 켭니다.
+- 실행 기록·증거: `%APPDATA%\droidbridge\qa-runs\` (macOS `~/Library/Application Support/droidbridge/qa-runs/`)
 
 ## LogCat
 
@@ -246,12 +294,16 @@ android-mirroring/
 │   ├── mirror-bridge.js  # scrcpy-server 구동, 영상·제어 소켓 → 로컬 WebSocket 중계
 │   ├── hid-keyboard.js   # UHID 키보드 리포트 (한/영 키 포함)
 │   ├── jira.js           # Jira Cloud REST v2
+│   ├── qa-*.js           # QA: 화면 파싱(xml)·기기 드라이버(driver)·앱 목록(apps)·체크리스트(checklist)
+│   │                     #     ·시나리오 형식(scenario)·실행기(runner)·회차 기록(results)
+│   ├── apk-info.js       # APK 패키지·버전·서명 읽기 (업데이트 테스트)
 │   ├── proxy-server.js   # 패킷 분석용 MITM 프록시 (현재 화면에서는 숨김)
 │   └── cert-manager.js   # 프록시용 인증서 발급
 ├── public/
 │   ├── index.html        # UI 마크업
 │   ├── style.css         # 선택형 화면 테마
 │   └── renderer.js       # UI 로직 — WebCodecs 디코딩, 입력, LogCat, Jira 팝업
+├── qa/scenarios/<앱>/     # 앱에 들어 있는 QA 시나리오·공통 절차 (사용자 시나리오는 userData/qa-scenarios)
 └── docs/                 # TODO.md(알려진 결함), 스크린샷
 ```
 
