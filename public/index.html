@@ -342,6 +342,19 @@
             <div class="ctrl-title">QA 대상 앱</div>
             <select id="qaAppSelect" class="settings-input" aria-label="QA 대상 앱 선택" onchange="selectQaApp(this.value)"></select>
           </div>
+          <!-- 체크리스트 — 구글 시트 탭을 CSV 로 내려받아 가져온다. 시나리오는 체크리스트 ID 로 짝지어진다 -->
+          <div class="ctrl-card qa-checklist-card">
+            <div class="ctrl-title">체크리스트</div>
+            <div class="qa-auto-info" id="qaChecklistInfo">가져온 체크리스트가 없습니다</div>
+            <div class="qa-auto-info" id="qaScenarioInfo"></div>
+            <div class="qa-auto-actions">
+              <button class="btn-sm" onclick="importQaChecklist()" title="구글 시트 → 파일 → 다운로드 → CSV 로 받은 파일">
+                <i class="ti ti-file-import"></i>CSV 가져오기</button>
+              <button class="btn-sm" onclick="openQaChecklist()"><i class="ti ti-list-check"></i>항목 보기</button>
+              <button class="btn-sm" onclick="openQaScenarioFolder()" title="시나리오(JSON)를 추가하는 폴더 열기">
+                <i class="ti ti-folder"></i>시나리오 폴더</button>
+            </div>
+          </div>
           <div class="qa-role-list" id="qaRoleList">
             <div class="ctrl-card qa-role-card" data-qa-role="A">
               <div class="ctrl-title">역할 A · 시험 대상</div>
@@ -349,6 +362,7 @@
               <select class="settings-input qa-package-select" aria-label="역할 A 앱 선택" disabled>
                 <option value="">기기를 먼저 선택하세요</option>
               </select>
+              <select class="settings-input qa-account-select" aria-label="역할 A 테스트 계정" onchange="saveQaRoleAccount('A', this.value)"></select>
             </div>
             <div class="ctrl-card qa-role-card" data-qa-role="B">
               <div class="ctrl-title">역할 B · 상대 기기</div>
@@ -356,6 +370,7 @@
               <select class="settings-input qa-package-select" aria-label="역할 B 앱 선택" disabled>
                 <option value="">기기를 먼저 선택하세요</option>
               </select>
+              <select class="settings-input qa-account-select" aria-label="역할 B 테스트 계정" onchange="saveQaRoleAccount('B', this.value)"></select>
             </div>
             <div class="ctrl-card qa-role-card" data-qa-role="C">
               <div class="ctrl-title">역할 C · 추가 상대 기기</div>
@@ -363,6 +378,40 @@
               <select class="settings-input qa-package-select" aria-label="역할 C 앱 선택" disabled>
                 <option value="">기기를 먼저 선택하세요</option>
               </select>
+              <select class="settings-input qa-account-select" aria-label="역할 C 테스트 계정" onchange="saveQaRoleAccount('C', this.value)"></select>
+            </div>
+          </div>
+          <!-- 자동 QA 실행 — 범위 기본값: 지난 Fail·Blocked + 자동 시나리오 전체 (사람 손이 드는 Pass 항목만 뺀다) -->
+          <div class="ctrl-card qa-run-card">
+            <div class="ctrl-title">자동 QA 실행
+              <button class="link-btn" style="float:right" onclick="openQaAccounts()"><i class="ti ti-user-cog"></i>테스트 계정</button>
+            </div>
+            <label class="qa-field-label" for="qaRunScope">실행 범위</label>
+            <select id="qaRunScope" class="settings-input" onchange="onQaRunOptionChange()">
+              <option value="default">지난 Fail·Blocked + 자동 항목 전체 (기본)</option>
+              <option value="failed">지난 Fail·Blocked 만 (수정 확인)</option>
+              <option value="all">전체 항목</option>
+              <option value="custom">직접 고른 항목 (항목 보기에서 선택)</option>
+            </select>
+            <label class="qa-field-label" for="qaKeepPriority">지난 Pass 인 사람 판정 항목</label>
+            <select id="qaKeepPriority" class="settings-input" onchange="onQaRunOptionChange()">
+              <option value="">빼기</option>
+              <option value="5">중요도 5 는 포함</option>
+              <option value="4">중요도 4 이상은 포함</option>
+            </select>
+            <label class="qa-check"><input type="checkbox" id="qaManualUnscripted" checked onchange="onQaRunOptionChange()">
+              시나리오가 없는 항목은 체크리스트를 보여 주고 사람이 판정</label>
+            <label class="qa-check"><input type="checkbox" id="qaRunUpdate" onchange="onQaRunOptionChange()">
+              업데이트 테스트로 실행 (기존 버전 설치 → 업데이트 전 항목 → 업데이트 설치 → 나머지)</label>
+            <div class="qa-auto-info" id="qaRunPreview">—</div>
+            <div class="qa-auto-actions">
+              <button class="btn-sm primary" id="qaRunBtn" onclick="startQaRun()"><i class="ti ti-player-play"></i>실행</button>
+              <button class="btn-sm" id="qaStopBtn" onclick="stopQaRun()" disabled><i class="ti ti-player-stop"></i>중단</button>
+              <button class="btn-sm" onclick="openQaResults()"><i class="ti ti-report-analytics"></i>결과 보기</button>
+            </div>
+            <div class="qa-run-progress" id="qaRunProgress" hidden>
+              <div class="qa-run-bar"><div id="qaRunBar"></div></div>
+              <div class="qa-auto-info" id="qaRunNow"></div>
             </div>
           </div>
           <div class="ctrl-card qa-inspect-card">
@@ -881,6 +930,91 @@
         <button class="btn-sm" onclick="openQaTabFromPicker()"><i class="ti ti-checklist"></i>QA 탭 열기</button>
       </div>
       <button class="btn-outline" style="margin-top:8px" onclick="closeQaAppPicker()">닫기</button>
+    </div>
+  </div>
+
+  <!-- QA 체크리스트 항목 — '직접 고른 항목' 범위를 여기서 정한다 -->
+  <div class="overlay" id="qaChecklistOverlay" onclick="if(event.target===this) closeQaChecklist()">
+    <div class="modal qa-wide-modal">
+      <h2>체크리스트 항목</h2>
+      <p id="qaChecklistHead">—</p>
+      <div class="qa-table-tools">
+        <input id="qaChecklistFilter" class="settings-input" placeholder="ID·분류·제목 검색" oninput="renderQaChecklist()">
+        <select id="qaChecklistShow" class="settings-input" onchange="renderQaChecklist()">
+          <option value="">전체</option>
+          <option value="auto">자동 시나리오 있음</option>
+          <option value="noscenario">시나리오 없음</option>
+          <option value="failed">최근 Fail·Blocked</option>
+        </select>
+      </div>
+      <div class="qa-table-wrap"><table class="qa-table" id="qaChecklistTable"></table></div>
+      <div class="qa-modal-actions">
+        <span class="qa-auto-info" id="qaPickedInfo"></span>
+        <button class="btn-sm" onclick="pickQaChecklist(true)">보이는 항목 모두 선택</button>
+        <button class="btn-sm" onclick="pickQaChecklist(false)">선택 해제</button>
+        <button class="btn-sm primary" onclick="useQaPicked()">고른 항목으로 실행 범위 지정</button>
+        <button class="btn-sm" onclick="closeQaChecklist()">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- QA 실행 결과 — 회차별 기록, 지난 회차와의 변화(수정 확인·회귀), 증거, Jira -->
+  <div class="overlay" id="qaResultOverlay" onclick="if(event.target===this) closeQaResults()">
+    <div class="modal qa-wide-modal">
+      <h2>QA 실행 결과</h2>
+      <div class="qa-table-tools">
+        <select id="qaRunSelect" class="settings-input" onchange="loadQaRunDetail(this.value)"></select>
+        <select id="qaResultShow" class="settings-input" onchange="renderQaResults()">
+          <option value="">전체</option>
+          <option value="bad">Fail·Blocked</option>
+          <option value="regression">회귀 (지난 Pass → 이번 Fail)</option>
+          <option value="fixed">수정 확인 (지난 Fail → 이번 Pass)</option>
+          <option value="before">업데이트 전 단계</option>
+        </select>
+      </div>
+      <p class="qa-result-head" id="qaResultHead">—</p>
+      <div class="qa-table-wrap"><table class="qa-table" id="qaResultTable"></table></div>
+      <div class="qa-modal-actions">
+        <button class="btn-sm" onclick="exportQaRun()"><i class="ti ti-file-export"></i>시트용 CSV 내보내기</button>
+        <button class="btn-sm" onclick="openQaRunFolder()"><i class="ti ti-folder"></i>기록 폴더</button>
+        <button class="btn-sm" onclick="closeQaResults()">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 사람 판정 / 확인 요청 — 실행은 응답이 올 때까지 기다린다 -->
+  <div class="overlay" id="qaAskOverlay">
+    <div class="modal qa-ask-modal">
+      <h2 id="qaAskTitle">확인이 필요합니다</h2>
+      <p class="qa-ask-item" id="qaAskItem">—</p>
+      <div class="qa-ask-message" id="qaAskMessage"></div>
+      <div class="qa-ask-detail" id="qaAskDetail"></div>
+      <textarea id="qaAskNote" class="modal-input" rows="2" placeholder="메모 (Fail·Blocked 이면 사유를 적어 주세요 — 결과와 CSV 에 남습니다)"></textarea>
+      <div class="qa-modal-actions" id="qaAskButtons"></div>
+    </div>
+  </div>
+
+  <!-- 테스트 계정 — 비밀번호는 이 PC 에 암호화해 두고 화면으로 다시 꺼내지 않는다 -->
+  <div class="overlay" id="qaAccountOverlay" onclick="if(event.target===this) closeQaAccounts()">
+    <div class="modal" style="width:520px;max-width:94vw">
+      <h2>테스트 계정</h2>
+      <p>시나리오에서 <code>$account.id</code> · <code>$account.password</code> 처럼 변수로 씁니다. 저장소·로그에는 남지 않습니다.</p>
+      <div class="qa-account-list" id="qaAccountList"></div>
+      <div class="qa-account-form">
+        <input type="hidden" id="qaAccKey">
+        <input id="qaAccLabel" class="modal-input" placeholder="이름 (예: 단체 사용자 1)">
+        <input id="qaAccId" class="modal-input" placeholder="아이디 ($account.id)" spellcheck="false">
+        <input id="qaAccPassword" class="modal-input" type="password" placeholder="비밀번호 ($account.password)">
+        <input id="qaAccCompany" class="modal-input" placeholder="회사 ID ($account.company, 선택)" spellcheck="false">
+        <input id="qaAccPhone" class="modal-input" placeholder="전화번호 ($account.phone, 선택)" spellcheck="false">
+        <input id="qaAccName" class="modal-input" placeholder="닉네임 ($account.name, 선택)">
+        <input id="qaAccEmail" class="modal-input" placeholder="이메일 ($account.email, 선택)" spellcheck="false">
+      </div>
+      <div class="qa-modal-actions">
+        <button class="btn-sm" onclick="newQaAccount()"><i class="ti ti-plus"></i>새 계정</button>
+        <button class="btn-sm primary" onclick="saveQaAccount()"><i class="ti ti-device-floppy"></i>저장</button>
+        <button class="btn-sm" onclick="closeQaAccounts()">닫기</button>
+      </div>
     </div>
   </div>
 

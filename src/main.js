@@ -8,6 +8,10 @@ const MirrorBridge = require('./mirror-bridge')
 const { createDriver } = require('./qa-driver')
 const qaApps = require('./qa-apps')
 const apkInfo = require('./apk-info')
+const qaChecklist = require('./qa-checklist')
+const qaScenario = require('./qa-scenario')
+const qaResults = require('./qa-results')
+const qaRunner = require('./qa-runner')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
@@ -599,7 +603,7 @@ ipcMain.handle('qa:apk-status', async (_, { serial, appId, variantId } = {}) => 
 //   base   : 판정(checkBaseInstall)의 action 대로. 데이터는 지울 수밖에 없을 때만 지운다
 //            install → adb install / upgrade → adb install -r (데이터 유지)
 //            reinstall(더 높은 버전·다른 서명) → adb uninstall(데이터 초기화) 후 adb install
-ipcMain.handle('qa:apk-install', async (_, { serial, appId, variantId, kind } = {}) => {
+async function qaInstallApk({ serial, appId, variantId, kind } = {}) {
   try {
     if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
     const { variant, error } = qaVariantOrError(appId, variantId)
@@ -611,6 +615,8 @@ ipcMain.handle('qa:apk-install', async (_, { serial, appId, variantId, kind } = 
     if (!entry) return { ok: false, message: `등록된 ${QA_APK_KINDS[kind]} APK 가 없습니다` }
     const before = await qaInstalledInfo(serial, variant.pkg)
     const check = qaInstallCheck(kind, entry, before.installed, before.device, variant.pkg)
+    // 기존 버전이 이미 같은 버전으로 깔려 있으면 할 일이 없다 — 실패가 아니라 '건너뜀'이다
+    if (kind === 'base' && check.action === 'none') return { ok: true, skipped: true, message: check.message }
     if (!check.canInstall) return { ok: false, message: check.message }
 
     const driver = getQaDriver(serial)
@@ -644,7 +650,10 @@ ipcMain.handle('qa:apk-install', async (_, { serial, appId, variantId, kind } = 
   } catch (e) {
     return { ok: false, message: String(e?.message || e) }
   }
-})
+}
+
+// 버튼(앱 선택 창)과 QA 실행기(업데이트 테스트) 둘 다 이 함수로 설치한다
+ipcMain.handle('qa:apk-install', (_, opts) => qaInstallApk(opts))
 
 // 지정 기기의 현재 화면 구조를 요소 목록으로 돌려준다
 ipcMain.handle('qa:inspect', async (_, serial) => {
@@ -878,6 +887,21 @@ ipcMain.handle('jira:create', async (_, issue) => {
   if (issue.assigneeId) extra.assignee = { accountId: issue.assigneeId }
   const r = await jira.createIssue(cfg, { ...issue, project: issue.project || cfg.project, extra })
   if (!r.ok) return r
+
+  // QA 실패 항목에서 연 경우: 실행 기록에 남은 증거(스크린샷·화면 구조·logcat)를 붙인다.
+  // 렌더러가 보낸 경로는 실행 기록 폴더 안의 것만 받는다.
+  if (issue.qaRunId && Array.isArray(issue.qaEvidence)) {
+    for (const rel of issue.qaEvidence.slice(0, 10)) {
+      const p = qaEvidencePath(issue.qaRunId, rel)
+      if (!p) continue
+      try {
+        const a = await jira.attachFile(cfg, r.key, `${issue.qaItemId || 'qa'}_${path.basename(p)}`, fs.readFileSync(p))
+        if (!a.ok) r.warn = (r.warn ? r.warn + ' / ' : '') + `증거 첨부 실패(${path.basename(p)}): ${a.message}`
+      } catch (e) {
+        r.warn = (r.warn ? r.warn + ' / ' : '') + `증거 파일을 읽지 못했습니다: ${e.message}`
+      }
+    }
+  }
 
   // 이슈는 이미 만들어졌으니, 첨부가 실패해도 성공으로 돌려주고 사유만 같이 준다
   if (issue.attachShot && issue.serial) {
@@ -1310,6 +1334,442 @@ ipcMain.handle('logcat:save', async (_, text) => {
     return { ok: false, message: String(e) }
   }
 })
+
+// ── QA 자동 진행 (체크리스트 → 시나리오 실행 → 회차 기록) ───────────────────
+// 저장 위치 (전부 userData 아래 — 저장소가 공개라 계정·결과를 코드 쪽에 두지 않는다)
+//   qa-accounts.json              테스트 계정. 비밀번호는 safeStorage 로 암호화, 렌더러로 돌려보내지 않는다
+//   qa-checklists/<appId>.json    가져온 체크리스트 (시트 CSV 를 읽은 결과)
+//   qa-scenarios/<appId>/*.json   사용자가 추가하는 시나리오 (앱에 들어 있는 qa/scenarios/<appId> 보다 우선)
+//   qa-runs/<runId>/result.json   실행 기록 + 항목별 증거(스크린샷·화면 구조·logcat)
+const QA_ACCOUNTS = path.join(app.getPath('userData'), 'qa-accounts.json')
+const QA_CHECKLISTS = path.join(app.getPath('userData'), 'qa-checklists')
+const QA_USER_SCENARIOS = path.join(app.getPath('userData'), 'qa-scenarios')
+const QA_RUNS = path.join(app.getPath('userData'), 'qa-runs')
+const QA_BUILTIN_SCENARIOS = path.join(__dirname, '..', 'qa', 'scenarios')
+const ACCOUNT_FIELDS = ['label', 'id', 'company', 'phone', 'name', 'email']
+const safeId = s => /^[a-z][a-z0-9-]*$/.test(String(s || ''))
+
+// ── 테스트 계정 ──
+function loadQaAccountsRaw() {
+  try {
+    const list = JSON.parse(fs.readFileSync(QA_ACCOUNTS, 'utf8'))
+    return Array.isArray(list) ? list : []
+  } catch { return [] }
+}
+
+function saveQaAccountsRaw(list) {
+  fs.writeFileSync(QA_ACCOUNTS, JSON.stringify(list, null, 2), { mode: 0o600 })
+}
+
+// 실행기용 — 비밀번호를 풀어서 준다. 렌더러로는 절대 보내지 않는다.
+function qaAccountForRun(key) {
+  const a = loadQaAccountsRaw().find(x => x.key === key)
+  if (!a) return null
+  let password = ''
+  if (a.password) {
+    try { password = a.enc ? safeStorage.decryptString(Buffer.from(a.password, 'base64')) : a.password } catch { password = '' }
+  }
+  const out = { password }
+  for (const f of ACCOUNT_FIELDS) out[f] = a[f] || ''
+  return out
+}
+
+ipcMain.handle('qa:accounts-load', () => ({
+  ok: true,
+  accounts: loadQaAccountsRaw().map(a => {
+    const out = { key: a.key, hasPassword: !!a.password }
+    for (const f of ACCOUNT_FIELDS) out[f] = a[f] || ''
+    return out
+  }),
+}))
+
+// 저장. password 가 빈 문자열이면 기존 비밀번호를 그대로 둔다 (Jira 토큰과 같은 방식).
+ipcMain.handle('qa:accounts-save', (_, acc = {}) => {
+  try {
+    const list = loadQaAccountsRaw()
+    const key = acc.key || `acc-${Date.now().toString(36)}`
+    const prev = list.find(x => x.key === key) || {}
+    const next = { ...prev, key }
+    for (const f of ACCOUNT_FIELDS) next[f] = String(acc[f] ?? prev[f] ?? '').trim()
+    if (!next.label) next.label = next.id || '이름 없는 계정'
+    if (acc.password) {
+      if (safeStorage.isEncryptionAvailable()) {
+        next.password = safeStorage.encryptString(String(acc.password)).toString('base64')
+        next.enc = true
+      } else { next.password = String(acc.password); next.enc = false }
+    }
+    const i = list.findIndex(x => x.key === key)
+    if (i >= 0) list[i] = next; else list.push(next)
+    saveQaAccountsRaw(list)
+    return { ok: true, key, encrypted: next.password ? !!next.enc : true }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
+})
+
+ipcMain.handle('qa:accounts-delete', (_, key) => {
+  try {
+    saveQaAccountsRaw(loadQaAccountsRaw().filter(x => x.key !== key))
+    return { ok: true }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
+})
+
+// ── 체크리스트 ──
+function qaChecklistFile(appId) { return path.join(QA_CHECKLISTS, `${appId}.json`) }
+
+function loadQaChecklist(appId) {
+  if (!safeId(appId)) return null
+  try { return JSON.parse(fs.readFileSync(qaChecklistFile(appId), 'utf8')) } catch { return null }
+}
+
+ipcMain.handle('qa:checklist', (_, appId) => {
+  const c = loadQaChecklist(appId)
+  return c ? { ok: true, checklist: c } : { ok: true, checklist: null }
+})
+
+// 시트를 CSV 로 내려받은 파일을 가져온다. 앱마다 하나 — 다시 가져오면 바꾼다.
+ipcMain.handle('qa:checklist-import', async (_, { appId, filePath } = {}) => {
+  try {
+    if (!safeId(appId) || !qaApps.findApp(appId)) return { ok: false, message: '등록되지 않은 앱입니다' }
+    let file = filePath
+    if (!file) {
+      const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        title: '체크리스트 CSV 선택 (구글 시트 → 파일 → 다운로드 → CSV)',
+        filters: [{ name: 'CSV', extensions: ['csv'] }],
+        properties: ['openFile'],
+      })
+      if (canceled || !filePaths?.length) return { ok: false, canceled: true }
+      file = filePaths[0]
+    }
+    const parsed = qaChecklist.parseChecklist(fs.readFileSync(file, 'utf8'), { name: path.basename(file, path.extname(file)) })
+    if (!parsed.ok) return parsed
+    const data = { appId, name: parsed.name, file, importedAt: new Date().toISOString(), columns: parsed.columns, warnings: parsed.warnings, items: parsed.items }
+    fs.mkdirSync(QA_CHECKLISTS, { recursive: true })
+    fs.writeFileSync(qaChecklistFile(appId), JSON.stringify(data, null, 2))
+    logMirror(`[QA] 체크리스트 가져옴: ${path.basename(file)} — ${parsed.items.length}개 항목${parsed.warnings.length ? ` (경고 ${parsed.warnings.length})` : ''}`)
+    return { ok: true, checklist: data }
+  } catch (e) { return { ok: false, message: `체크리스트를 읽지 못했습니다: ${e?.message || e}` } }
+})
+
+// ── 시나리오 ──
+// 앱에 들어 있는 것(qa/scenarios/<appId>) 다음에 사용자 폴더(userData/qa-scenarios/<appId>)를 읽어,
+// 같은 id 는 사용자 것이 이긴다. 앱을 새로 빌드하지 않고 QA 담당자가 시나리오를 더할 수 있게.
+function loadQaScenarios(appId) {
+  const files = []
+  for (const [dir, origin] of [[path.join(QA_BUILTIN_SCENARIOS, appId), '앱 기본'], [path.join(QA_USER_SCENARIOS, appId), '사용자']]) {
+    let names = []
+    try { names = fs.readdirSync(dir).filter(n => n.toLowerCase().endsWith('.json')).sort() } catch { continue }
+    for (const n of names) {
+      try { files.push({ name: `${origin}/${n}`, data: JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')) }) } catch (e) {
+        files.push({ name: `${origin}/${n}`, data: null, error: `JSON 오류: ${e.message}` })
+      }
+    }
+  }
+  const col = qaScenario.collectScenarios(files.filter(f => f.data))
+  for (const f of files) if (f.error) col.errors.unshift(`${f.name}: ${f.error}`)
+  return col
+}
+
+ipcMain.handle('qa:scenarios', (_, appId) => {
+  if (!safeId(appId)) return { ok: false, message: '앱이 올바르지 않습니다' }
+  const { scenarios, procedures, errors } = loadQaScenarios(appId)
+  return {
+    ok: true,
+    scenarios: [...scenarios.values()].map(s => ({
+      id: s.id, title: s.title || '', mode: s.mode || 'auto', roles: s.roles || ['A'],
+      update: s.update || '', variants: s.variants || null, file: s._file,
+    })),
+    procedures: Object.keys(procedures),
+    errors,
+    userDir: path.join(QA_USER_SCENARIOS, appId),
+  }
+})
+
+ipcMain.handle('qa:scenario-folder', async (_, appId) => {
+  if (!safeId(appId)) return { ok: false, message: '앱이 올바르지 않습니다' }
+  const dir = path.join(QA_USER_SCENARIOS, appId)
+  fs.mkdirSync(dir, { recursive: true })
+  const err = await shell.openPath(dir)
+  return err ? { ok: false, message: err } : { ok: true, dir }
+})
+
+// ── 실행 기록 ──
+function loadQaRuns() {
+  let dirs = []
+  try { dirs = fs.readdirSync(QA_RUNS) } catch { return [] }
+  const runs = []
+  for (const d of dirs) {
+    try { runs.push(JSON.parse(fs.readFileSync(path.join(QA_RUNS, d, 'result.json'), 'utf8'))) } catch { }
+  }
+  return runs.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))
+}
+
+function qaRunDir(runId) {
+  if (!/^[0-9]{8}-[0-9]{6}(-\d+)?$/.test(String(runId || ''))) return null
+  return path.join(QA_RUNS, runId)
+}
+
+function saveQaRun(run) {
+  const dir = qaRunDir(run.id)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(run, null, 2))
+}
+
+ipcMain.handle('qa:runs', (_, { appId, variantId } = {}) => ({
+  ok: true,
+  runs: loadQaRuns()
+    .filter(r => (!appId || r.app?.id === appId) && (!variantId || r.app?.variant === variantId))
+    .map(r => ({ id: r.id, startedAt: r.startedAt, finishedAt: r.finishedAt, app: r.app, build: r.build, update: r.update, scope: r.scope, summary: r.summary, stopped: !!r.stopped })),
+}))
+
+ipcMain.handle('qa:run-detail', (_, runId) => {
+  const dir = qaRunDir(runId)
+  if (!dir) return { ok: false, message: '실행 기록 id 가 올바르지 않습니다' }
+  try { return { ok: true, run: JSON.parse(fs.readFileSync(path.join(dir, 'result.json'), 'utf8')) } } catch (e) {
+    return { ok: false, message: `실행 기록을 읽지 못했습니다: ${e.message}` }
+  }
+})
+
+// 증거 파일 열기 — 실행 기록 폴더 안의 파일만
+function qaEvidencePath(runId, rel) {
+  const dir = qaRunDir(runId)
+  if (!dir || typeof rel !== 'string') return null
+  const p = path.resolve(dir, rel)
+  return p.startsWith(path.resolve(dir) + path.sep) ? p : null
+}
+
+ipcMain.handle('qa:evidence-open', async (_, { runId, file } = {}) => {
+  const p = file ? qaEvidencePath(runId, file) : qaRunDir(runId)
+  if (!p) return { ok: false, message: '열 수 없는 경로입니다' }
+  const err = await shell.openPath(p)
+  return err ? { ok: false, message: err } : { ok: true }
+})
+
+// 실패 항목으로 Jira 티켓을 만들면 그 키를 기록에 남긴다 — 다음 회차에서 "수정 확인/재발" 을 이어 본다
+ipcMain.handle('qa:link-jira', (_, { runId, itemId, phase = '', key } = {}) => {
+  try {
+    const dir = qaRunDir(runId)
+    if (!dir || !key) return { ok: false, message: '잘못된 요청입니다' }
+    const file = path.join(dir, 'result.json')
+    const run = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const it = run.items.find(i => i.id === itemId && (i.phase || '') === phase)
+    if (!it) return { ok: false, message: '항목을 찾지 못했습니다' }
+    it.jira = String(key)
+    fs.writeFileSync(file, JSON.stringify(run, null, 2))
+    return { ok: true }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
+})
+
+// 시트에 붙여 넣을 CSV (ID, 결과, 버그 내용) — 이번 회차에 안 돌린 항목은 지난 결과로 채운다
+ipcMain.handle('qa:export', async (_, runId) => {
+  try {
+    const dir = qaRunDir(runId)
+    if (!dir) return { ok: false, message: '실행 기록 id 가 올바르지 않습니다' }
+    const run = JSON.parse(fs.readFileSync(path.join(dir, 'result.json'), 'utf8'))
+    const checklist = loadQaChecklist(run.app.id)
+    const items = checklist?.items || run.items.map(i => ({ id: i.id }))
+    const latest = qaResults.latestResults(loadQaRuns(), { appId: run.app.id, variantId: run.app.variant, before: new Date(run.startedAt).getTime() })
+    const csv = qaResults.toSheetCsv(items, run.items, latest)
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'QA 결과 CSV 저장',
+      defaultPath: `QA_${run.app.id}_${run.app.variant}_${run.id}.csv`,
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    fs.writeFileSync(filePath, csv)
+    return { ok: true, filePath }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
+})
+
+// 실행 전에 이번 범위에 몇 항목이 드는지 미리 보여 준다
+function qaSelection({ appId, variantId, scope, picked, keepPriority }) {
+  const checklist = loadQaChecklist(appId)
+  if (!checklist) return { ok: false, message: '체크리스트를 먼저 가져와 주세요' }
+  const { scenarios } = loadQaScenarios(appId)
+  const latest = qaResults.latestResults(loadQaRuns(), { appId, variantId })
+  const items = qaResults.selectItems({ items: checklist.items, scenarios, latest, scope, picked, keepPriority, variantId })
+  return { ok: true, checklist, scenarios, latest, items }
+}
+
+ipcMain.handle('qa:run-preview', (_, opts = {}) => {
+  const s = qaSelection(opts)
+  if (!s.ok) return s
+  const withScenario = s.items.filter(i => s.scenarios.has(i.id)).length
+  return {
+    ok: true, count: s.items.length, withScenario, manual: s.items.length - withScenario, total: s.checklist.items.length,
+    latest: s.latest,
+  }
+})
+
+// ── 실행 ──
+// 기기마다 logcat 을 따로 띄워 항목 구간만 잘라 증거로 남긴다. 화면의 LogCat(logcat:start)과는 별개 프로세스다.
+function startQaLogcat(serial) {
+  const lines = []
+  let dropped = 0
+  let pending = ''
+  const proc = spawn(adbPath, ['-s', serial, 'logcat', '-v', 'threadtime', '-T', '1'])
+  proc.on('error', e => logMirror(`[QA] ${serial} logcat 실행 실패: ${e.message}`))
+  proc.stdout.on('data', d => {
+    const parts = (pending + d.toString('utf8')).split(/\r?\n/)
+    pending = parts.pop()
+    lines.push(...parts)
+    if (lines.length > 60000) { const cut = lines.length - 50000; lines.splice(0, cut); dropped += cut }
+  })
+  proc.stderr.on('data', () => { })
+  return {
+    mark: () => dropped + lines.length,
+    slice: m => lines.slice(Math.max(0, m - dropped)),
+    stop: () => { try { proc.kill() } catch { } },
+  }
+}
+
+let qaActive = null      // { runner, runId, pendingAsk: Map, logcats }
+
+function qaSend(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+}
+
+function newRunId() {
+  const d = new Date()
+  const p = n => String(n).padStart(2, '0')
+  const base = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  let id = base
+  let n = 1
+  while (fs.existsSync(path.join(QA_RUNS, id))) id = `${base}-${n++}`
+  return id
+}
+
+// opts = { appId, roles: { A: { serial, variantId, accountKey }, ... }, scope, picked, keepPriority, update, manualForUnscripted }
+ipcMain.handle('qa:run', async (_, opts = {}) => {
+  if (qaActive) return { ok: false, message: '이미 QA 를 실행 중입니다' }
+  try {
+    const app0 = qaApps.findApp(opts.appId)
+    if (!app0) return { ok: false, message: '등록되지 않은 앱입니다' }
+    const roleCfg = opts.roles || {}
+    if (!roleCfg.A?.serial) return { ok: false, message: '역할 A(시험 대상) 기기를 선택해 주세요' }
+    const dutVariant = qaApps.findVariant(app0.id, roleCfg.A.variantId)
+    if (!dutVariant) return { ok: false, message: '역할 A 의 앱 타입을 선택해 주세요' }
+    const serials = Object.values(roleCfg).map(r => r?.serial).filter(Boolean)
+    if (new Set(serials).size !== serials.length) return { ok: false, message: '한 기기를 두 역할에 배정할 수 없습니다' }
+
+    const sel = qaSelection({ appId: app0.id, variantId: dutVariant.id, scope: opts.scope, picked: opts.picked, keepPriority: opts.keepPriority })
+    if (!sel.ok) return sel
+    if (!sel.items.length) return { ok: false, message: '이번 범위에 실행할 항목이 없습니다' }
+    if (opts.update) {
+      const base = qaApkEntry(app0.id, dutVariant.id, 'base')
+      const upd = qaApkEntry(app0.id, dutVariant.id, 'update')
+      if (!base || !upd) return { ok: false, message: `업데이트 테스트를 하려면 ${dutVariant.name} 의 기존 버전·업데이트 APK 를 둘 다 등록해 주세요` }
+    }
+
+    const roles = {}
+    const logcats = {}
+    for (const [role, rc] of Object.entries(roleCfg)) {
+      if (!rc?.serial) continue
+      const variant = qaApps.findVariant(app0.id, rc.variantId) || dutVariant
+      const account = rc.accountKey ? qaAccountForRun(rc.accountKey) : null
+      if (rc.accountKey && !account) return { ok: false, message: `역할 ${role} 의 테스트 계정을 찾지 못했습니다` }
+      roles[role] = { driver: getQaDriver(rc.serial), pkg: variant.pkg, variantId: variant.id, account, serial: rc.serial }
+    }
+    for (const [role, r] of Object.entries(roles)) logcats[role] = startQaLogcat(r.serial)
+
+    const runId = newRunId()
+    const runDir = qaRunDir(runId)
+    fs.mkdirSync(runDir, { recursive: true })
+    const startedAt = new Date().toISOString()
+    const before = await qaInstalledInfo(roles.A.serial, dutVariant.pkg).catch(() => ({ installed: null }))
+    const pendingAsk = new Map()
+    let askSeq = 0
+
+    const runner = qaRunner.createRunner({
+      roles,
+      scenarios: sel.scenarios,
+      procedures: loadQaScenarios(app0.id).procedures,
+      options: { manualForUnscripted: opts.manualForUnscripted !== false },
+      hooks: {
+        progress: e => qaSend('qa:progress', { runId, ...e }),
+        ask: req => new Promise(resolve => {
+          const id = ++askSeq
+          pendingAsk.set(id, resolve)
+          qaSend('qa:prompt', { runId, requestId: id, ...req })
+        }),
+        evidence: async (itemId, role, file, data) => {
+          const rel = path.join(itemId.replace(/[^\w.-]/g, '_'), file)
+          const p = path.join(runDir, rel)
+          fs.mkdirSync(path.dirname(p), { recursive: true })
+          fs.writeFileSync(p, data)
+          return rel.split(path.sep).join('/')
+        },
+        logcat: { mark: role => logcats[role]?.mark() ?? 0, slice: (role, m) => logcats[role]?.slice(m) ?? [] },
+        installApk: async kind => {
+          qaSend('qa:progress', { runId, type: 'log', message: `${dutVariant.name} ${kind === 'base' ? '기존 버전' : '업데이트'} 설치 중...` })
+          return qaInstallApk({ serial: roles.A.serial, appId: app0.id, variantId: dutVariant.id, kind })
+        },
+      },
+    })
+    qaActive = { runner, runId, pendingAsk, logcats }
+    logMirror(`[QA] 실행 시작 ${runId}: ${app0.name} ${dutVariant.name} · ${sel.items.length}개 항목${opts.update ? ' · 업데이트 테스트' : ''}`)
+    qaSend('qa:progress', { runId, type: 'run-start', total: sel.items.length, update: !!opts.update })
+
+    // 실행은 기다리지 않고 돌려보낸다 — 진행은 qa:progress 로 흘린다
+    ;(async () => {
+      let out = { items: [], stopped: false }
+      let error = ''
+      try { out = await runner.run({ items: sel.items, update: !!opts.update }) } catch (e) { error = String(e?.message || e) }
+      for (const l of Object.values(logcats)) l.stop()
+      const after = await qaInstalledInfo(roles.A.serial, dutVariant.pkg).catch(() => ({ installed: null }))
+      const items = out.items.map(it => ({
+        ...it,
+        change: it.phase === 'before' ? '' : qaResults.classifyChange(sel.latest[it.id]?.status, it.status),
+        prev: sel.latest[it.id] ? { status: sel.latest[it.id].status, runId: sel.latest[it.id].runId, jira: sel.latest[it.id].jira || '' } : null,
+        jira: sel.latest[it.id]?.jira && it.status !== 'Pass' ? sel.latest[it.id].jira : '',
+      }))
+      const apkInfoOf = kind => {
+        const e = qaApkEntry(app0.id, dutVariant.id, kind)
+        const i = e?.info || {}
+        return e ? { fileName: path.basename(e.path), versionName: i.versionName, versionCode: i.versionCode, sha256: i.signer?.sha256?.slice(0, 12) || '' } : null
+      }
+      const run = {
+        id: runId, startedAt, finishedAt: new Date().toISOString(),
+        app: { id: app0.id, name: app0.name, variant: dutVariant.id, variantName: dutVariant.name, pkg: dutVariant.pkg },
+        build: after.installed || before.installed || null,
+        buildBefore: before.installed || null,
+        update: opts.update ? { base: apkInfoOf('base'), update: apkInfoOf('update') } : null,
+        scope: { mode: opts.scope || 'default', keepPriority: opts.keepPriority ?? null, picked: opts.scope === 'custom' ? (opts.picked || []) : undefined },
+        devices: Object.fromEntries(Object.entries(roles).map(([k, r]) => [k, { serial: r.serial, variant: r.variantId }])),
+        checklist: sel.checklist.name,
+        stopped: !!out.stopped, error: error || out.message || '',
+        items,
+        summary: qaResults.summarize(items),
+      }
+      try { saveQaRun(run) } catch (e) { logMirror(`[QA] 실행 기록 저장 실패: ${e.message}`) }
+      qaActive = null
+      const s = run.summary
+      logMirror(`[QA] 실행 끝 ${runId}: Pass ${s.Pass} · Fail ${s.Fail} · Blocked ${s.Blocked} · 회귀 ${s.regression} · 수정 확인 ${s.fixed}${run.stopped ? ' (중단됨)' : ''}${run.error ? ` — ${run.error}` : ''}`)
+      qaSend('qa:progress', { runId, type: 'run-end', summary: s, stopped: run.stopped, error: run.error })
+    })()
+    return { ok: true, runId, count: sel.items.length }
+  } catch (e) {
+    qaActive = null
+    return { ok: false, message: String(e?.message || e) }
+  }
+})
+
+// 중단 — 지금 단계가 끝나면 멈추고, teardown 은 끝까지 돈다. 사람 응답을 기다리던 중이면 그것도 끝낸다.
+ipcMain.handle('qa:stop', () => {
+  if (!qaActive) return { ok: false, message: '실행 중이 아닙니다' }
+  qaActive.runner.stop()
+  for (const resolve of qaActive.pendingAsk.values()) resolve({ action: 'stop' })
+  qaActive.pendingAsk.clear()
+  return { ok: true }
+})
+
+ipcMain.handle('qa:answer', (_, { requestId, answer } = {}) => {
+  const resolve = qaActive?.pendingAsk.get(requestId)
+  if (!resolve) return { ok: false, message: '기다리는 질문이 없습니다' }
+  qaActive.pendingAsk.delete(requestId)
+  resolve(answer || {})
+  return { ok: true }
+})
+
+ipcMain.handle('qa:status', () => ({ ok: true, running: !!qaActive, runId: qaActive?.runId || '' }))
 
 // ── 세팅 체크 ──────────────────────────────────────────────────
 ipcMain.handle('setup:check', async () => {

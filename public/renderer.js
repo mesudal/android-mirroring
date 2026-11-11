@@ -339,6 +339,7 @@ async function selectQaApp(appId) {
   renderQaAppBadges()
   renderQaAppSelect()
   await Promise.all(QA_ROLES.map(renderQaPackageSelect))
+  refreshQaAutomation()
 }
 
 function renderQaAppSelect() {
@@ -675,6 +676,7 @@ async function renderQaPackageSelect(role) {
     setQaVariant(serial, variant?.id || '')
     qaAssignments[role] = { serial, pkg: select.value }
     saveQaAssignments()
+    if (role === 'A') previewQaRun()
     // 같은 기기를 다른 역할에도 배정했으면 그쪽도 맞춘다
     for (const other of QA_ROLES) {
       if (other !== role && qaRoleCard(other)?.querySelector('.qa-device-select')?.value === serial) renderQaPackageSelect(other)
@@ -695,6 +697,7 @@ async function loadQaSetup() {
     if (!qaDevices.length) setQaStatus('연결된 Android 기기가 없습니다', true)
     else if (packageErrors.length) setQaStatus(packageErrors.join(' / '), true)
     else setQaStatus('역할별 기기와 앱을 선택한 뒤 현재 화면을 조회하세요')
+    refreshQaAutomation()
   })().catch(error => {
     setQaStatus(`QA 기기 목록을 불러오지 못했습니다: ${error.message}`, true)
   }).finally(() => { qaLoadPromise = null })
@@ -847,6 +850,603 @@ async function tapQaByText() {
     if (button) button.disabled = false
   }
 }
+
+// ── QA 자동 진행 ───────────────────────────────────────────────
+// 체크리스트(CSV) + 시나리오(JSON) → 실행 → 회차별 결과. 실제 실행·저장은 메인(qa:*)이 하고,
+// 여기서는 설정을 모아 보내고 진행·결과를 그린다. 계정 비밀번호는 여기로 오지 않는다.
+const qaAuto = {
+  checklist: null, scenarios: [], scenarioErrors: [], accounts: [], latest: {},
+  picked: new Set(), running: false, total: 0, done: 0, runId: '', curItem: '',
+  runs: [], run: null, ask: null,
+}
+const QA_STATUS_CLASS = { Pass: 'pass', Fail: 'fail', Blocked: 'blocked', Skipped: 'skipped', 'To do': 'todo' }
+const QA_CHANGE_LABEL = { fixed: '수정 확인', regression: '회귀', still: '미해결', new: '처음' }
+const QA_PHASE_LABEL = { before: '업데이트 전', after: '업데이트 후' }
+
+function qaCurAppId() { return qaCurrentApp()?.id || '' }
+
+function qaEl2(tag, cls, text) {
+  const e = document.createElement(tag)
+  if (cls) e.className = cls
+  if (text != null) e.textContent = text
+  return e
+}
+
+function qaLoadJson(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback } catch { return fallback }
+}
+function qaSaveJson(key, v) { try { localStorage.setItem(key, JSON.stringify(v)) } catch { } }
+
+// 역할별 테스트 계정 선택 — 계정 자체(비밀번호 포함)는 메인에 있고 여기는 키만 기억한다
+function loadQaRoleAccounts() { return qaLoadJson('db_qa_role_accounts', {}) || {} }
+function saveQaRoleAccount(role, key) {
+  const m = loadQaRoleAccounts()
+  if (key) m[role] = key; else delete m[role]
+  qaSaveJson('db_qa_role_accounts', m)
+}
+
+// '직접 고른 항목' — 앱마다
+function loadQaPicked(appId) { return (qaLoadJson('db_qa_picked', {}) || {})[appId] || [] }
+function saveQaPicked(appId, ids) {
+  const all = qaLoadJson('db_qa_picked', {}) || {}
+  all[appId] = ids
+  qaSaveJson('db_qa_picked', all)
+}
+
+async function refreshQaAutomation() {
+  await ensureQaApps()
+  const appId = qaCurAppId()
+  if (!appId) return
+  const [c, s, a] = await Promise.all([
+    window.db.qaChecklist(appId), window.db.qaScenarios(appId), window.db.qaAccountsLoad(),
+  ]).catch(() => [null, null, null])
+  qaAuto.checklist = c?.checklist || null
+  qaAuto.scenarios = s?.ok ? s.scenarios : []
+  qaAuto.scenarioErrors = s?.ok ? s.errors : [s?.message || '시나리오를 읽지 못했습니다']
+  qaAuto.accounts = a?.ok ? a.accounts : []
+  qaAuto.picked = new Set(loadQaPicked(appId))
+  renderQaChecklistInfo()
+  renderQaAccountSelects()
+  await previewQaRun()
+}
+
+function renderQaChecklistInfo() {
+  const c = qaAuto.checklist
+  const info = document.getElementById('qaChecklistInfo')
+  if (info) {
+    info.textContent = c
+      ? `${c.name || '체크리스트'} · ${c.items.length}개 항목 · ${new Date(c.importedAt).toLocaleDateString()} 가져옴${c.warnings?.length ? ` · 경고 ${c.warnings.length}` : ''}`
+      : '가져온 체크리스트가 없습니다 — 구글 시트 탭을 CSV 로 내려받아 가져오세요'
+    info.title = c?.warnings?.join('\n') || ''
+  }
+  const sc = document.getElementById('qaScenarioInfo')
+  if (sc) {
+    const n = m => qaAuto.scenarios.filter(s => s.mode === m).length
+    const linked = c ? c.items.filter(i => qaAuto.scenarios.some(s => s.id === i.id)).length : 0
+    sc.textContent = `시나리오 ${qaAuto.scenarios.length}개 (자동 ${n('auto')} · 반자동 ${n('semi')} · 수동 ${n('manual')})`
+      + (c ? ` · 체크리스트와 연결 ${linked}개` : '')
+      + (qaAuto.scenarioErrors.length ? ` · 오류 ${qaAuto.scenarioErrors.length}건` : '')
+    sc.title = qaAuto.scenarioErrors.join('\n')
+    sc.classList.toggle('error', qaAuto.scenarioErrors.length > 0)
+  }
+}
+
+function renderQaAccountSelects() {
+  const saved = loadQaRoleAccounts()
+  for (const role of QA_ROLES) {
+    const sel = qaRoleCard(role)?.querySelector('.qa-account-select')
+    if (!sel) continue
+    sel.replaceChildren(new Option('테스트 계정 없음', ''), ...qaAuto.accounts.map(a => new Option(`${a.label}${a.id ? ` · ${a.id}` : ''}`, a.key)))
+    if (qaAuto.accounts.some(a => a.key === saved[role])) sel.value = saved[role]
+  }
+}
+
+// 역할 카드에서 고른 기기·타입·계정
+function collectQaRoles() {
+  const app = qaCurrentApp()
+  const accounts = loadQaRoleAccounts()
+  const roles = {}
+  for (const role of QA_ROLES) {
+    const card = qaRoleCard(role)
+    const serial = card?.querySelector('.qa-device-select')?.value || ''
+    const pkg = card?.querySelector('.qa-package-select')?.value || ''
+    if (!serial || !pkg) continue
+    const variant = app?.variants.find(v => v.pkg === pkg)
+    roles[role] = { serial, variantId: variant?.id || '', accountKey: accounts[role] || '' }
+  }
+  return roles
+}
+
+function qaRunOptions() {
+  const roles = collectQaRoles()
+  const keep = document.getElementById('qaKeepPriority')?.value
+  return {
+    appId: qaCurAppId(),
+    variantId: roles.A?.variantId || '',
+    roles,
+    scope: document.getElementById('qaRunScope')?.value || 'default',
+    picked: [...qaAuto.picked],
+    keepPriority: keep ? Number(keep) : null,
+    manualForUnscripted: !!document.getElementById('qaManualUnscripted')?.checked,
+    update: !!document.getElementById('qaRunUpdate')?.checked,
+  }
+}
+
+function onQaRunOptionChange() { previewQaRun() }
+
+// 이번 범위에 몇 항목이 드는지 미리 보여 준다
+async function previewQaRun() {
+  const el = document.getElementById('qaRunPreview')
+  if (!el) return
+  if (!qaAuto.checklist) { el.textContent = '체크리스트를 먼저 가져와 주세요'; return }
+  const o = qaRunOptions()
+  if (!o.variantId) { el.textContent = '역할 A 의 기기와 앱 타입을 선택해 주세요'; return }
+  const r = await window.db.qaRunPreview(o)
+  if (!r.ok) { el.textContent = r.message; return }
+  qaAuto.latest = r.latest || {}
+  const manualNote = o.manualForUnscripted ? `사람 판정 ${r.manual}` : `시나리오 없는 ${r.manual}개는 To do 로 남김`
+  el.textContent = `이번 실행: ${r.count}개 (시나리오 ${r.withScenario} · ${manualNote}) / 전체 ${r.total}개`
+    + (o.scope === 'custom' && !o.picked.length ? ' — 항목 보기에서 실행할 항목을 골라 주세요' : '')
+}
+
+async function importQaChecklist() {
+  const appId = qaCurAppId()
+  if (!appId) { showToast('QA 대상 앱을 먼저 선택해 주세요', true); return }
+  const r = await window.db.qaChecklistImport({ appId })
+  if (r.canceled) return
+  if (!r.ok) { showToast(r.message, true); return }
+  showToast(`체크리스트 ${r.checklist.items.length}개 항목을 가져왔습니다${r.checklist.warnings.length ? ` (경고 ${r.checklist.warnings.length}건 — 마우스를 올려 확인)` : ''}`)
+  await refreshQaAutomation()
+}
+
+async function openQaScenarioFolder() {
+  const appId = qaCurAppId()
+  if (!appId) return
+  const r = await window.db.qaScenarioFolder(appId)
+  if (!r.ok) showToast(r.message, true)
+}
+
+// ── 실행 ──
+function setQaRunningUI(running) {
+  qaAuto.running = running
+  const runBtn = document.getElementById('qaRunBtn')
+  const stopBtn = document.getElementById('qaStopBtn')
+  if (runBtn) runBtn.disabled = running
+  if (stopBtn) stopBtn.disabled = !running
+  const prog = document.getElementById('qaRunProgress')
+  if (prog) prog.hidden = !running
+}
+
+function setQaProgress(text) {
+  setText('qaRunNow', text)
+  const bar = document.getElementById('qaRunBar')
+  if (bar) bar.style.width = `${qaAuto.total ? Math.min(100, Math.round(qaAuto.done / qaAuto.total * 100)) : 0}%`
+}
+
+async function startQaRun() {
+  if (qaAuto.running) return
+  const o = qaRunOptions()
+  if (!qaAuto.checklist) { showToast('체크리스트를 먼저 가져와 주세요', true); return }
+  if (!o.roles.A) { showToast('역할 A(시험 대상)의 기기와 앱 타입을 선택해 주세요', true); return }
+  if (o.scope === 'custom' && !o.picked.length) { showToast('항목 보기에서 실행할 항목을 골라 주세요', true); openQaChecklist(); return }
+  const preview = document.getElementById('qaRunPreview')?.textContent || ''
+  const lines = [`${qaCurrentApp()?.name} 자동 QA 를 시작합니다.`, preview]
+  if (o.update) lines.push('', '업데이트 테스트: 기존 버전을 먼저 설치합니다. 기기 상태에 따라 앱 데이터가 지워질 수 있습니다 (더 높은 버전·다른 서명이 깔려 있을 때).')
+  lines.push('', '실행 중에는 기기를 직접 조작하지 마세요.')
+  if (!confirm(lines.join('\n'))) return
+  const r = await window.db.qaRun(o)
+  if (!r.ok) { showToast(r.message, true); return }
+  qaAuto.runId = r.runId
+  qaAuto.total = r.count
+  qaAuto.done = 0
+  setQaRunningUI(true)
+  setQaProgress('시작하는 중...')
+}
+
+async function stopQaRun() {
+  if (!qaAuto.running) return
+  if (!confirm('QA 실행을 중단할까요? 지금 단계가 끝나고 정리(teardown) 후 멈춥니다. 남은 항목은 To do 로 남습니다.')) return
+  const r = await window.db.qaStop()
+  if (!r.ok) showToast(r.message, true)
+  else setQaProgress('중단하는 중 — 정리 단계를 마치고 멈춥니다')
+}
+
+function onQaProgress(e) {
+  switch (e.type) {
+    case 'run-start':
+      qaAuto.runId = e.runId
+      qaAuto.total = e.total
+      qaAuto.done = 0
+      setQaRunningUI(true)
+      setQaProgress(e.update ? '업데이트 테스트 시작' : '시작')
+      break
+    case 'phase': {
+      const label = { 'install-base': '기존 버전 설치 중...', before: '업데이트 전 항목 실행', 'install-update': '업데이트 설치 중...', after: '업데이트 후 항목 실행' }[e.phase]
+      if (label) setQaProgress(label)
+      break
+    }
+    case 'item-start':
+      qaAuto.curItem = `${e.phase ? `[${QA_PHASE_LABEL[e.phase] || e.phase}] ` : ''}${e.itemId}${e.title ? ` ${e.title}` : ''}`
+      setQaProgress(`${qaAuto.done + 1}/${qaAuto.total} ${qaAuto.curItem}`)
+      break
+    case 'step':
+      setQaProgress(`${qaAuto.done + 1}/${qaAuto.total} ${qaAuto.curItem} — ${e.label}`)
+      break
+    case 'waiting':
+      setQaProgress(`${qaAuto.curItem} — 사람 응답을 기다리는 중`)
+      break
+    case 'item-end':
+      qaAuto.done++
+      setQaProgress(`${qaAuto.done}/${qaAuto.total} ${e.itemId} → ${e.status}${e.reason ? ` (${e.reason.slice(0, 60)})` : ''}`)
+      break
+    case 'log':
+      setQaProgress(e.message)
+      break
+    case 'run-end': {
+      setQaRunningUI(false)
+      closeQaAsk()
+      const s = e.summary || {}
+      const msg = `QA ${e.stopped ? '중단' : '완료'} — Pass ${s.Pass || 0} · Fail ${s.Fail || 0} · Blocked ${s.Blocked || 0}`
+        + (s.regression ? ` · 회귀 ${s.regression}` : '') + (s.fixed ? ` · 수정 확인 ${s.fixed}` : '')
+      showToast(e.error ? `${msg} — ${e.error}` : msg, !!(s.Fail || s.regression || e.error))
+      refreshQaAutomation()
+      openQaResults(e.runId)
+      break
+    }
+  }
+}
+
+// ── 사람 판정 / 확인 창 ──
+function openQaAsk(req) {
+  qaAuto.ask = req
+  const prompt = req.kind === 'prompt'
+  setText('qaAskTitle', prompt ? '진행 전에 확인해 주세요' : '결과를 판정해 주세요')
+  setText('qaAskItem', `${req.itemId}${req.title ? ` · ${req.title}` : ''}${req.dev ? ` · 역할 ${req.dev}` : ''}`)
+  setText('qaAskMessage', req.message || '')
+  const detail = document.getElementById('qaAskDetail')
+  if (detail) {
+    detail.replaceChildren()
+    for (const [label, text] of [['사전 조건', req.detail?.pre], ['절차', req.detail?.steps], ['기대 결과', req.detail?.expected]]) {
+      if (!text) continue
+      const row = qaEl2('div', 'qa-ask-row')
+      row.append(qaEl2('b', '', label), qaEl2('span', '', text))
+      detail.append(row)
+    }
+  }
+  const note = document.getElementById('qaAskNote')
+  if (note) note.value = ''
+  const box = document.getElementById('qaAskButtons')
+  if (box) {
+    const btn = (label, cls, answer) => {
+      const b = qaEl2('button', `btn-sm ${cls}`, label)
+      b.type = 'button'
+      b.onclick = () => answerQaAsk(answer)
+      return b
+    }
+    box.replaceChildren(...(prompt
+      ? [btn('계속 진행', 'primary', { action: 'continue' }), btn('진행할 수 없음 (Blocked)', '', { action: 'block' }), btn('전체 중단', 'danger', { action: 'stop' })]
+      : [btn('Pass', 'primary', { result: 'Pass' }), btn('Fail', 'danger', { result: 'Fail' }), btn('Blocked', '', { result: 'Blocked' }),
+        btn('건너뛰기', '', { result: 'Skipped' }), btn('전체 중단', '', { action: 'stop' })]))
+  }
+  document.getElementById('qaAskOverlay')?.classList.add('open')
+  note?.focus()
+}
+
+function closeQaAsk() {
+  qaAuto.ask = null
+  document.getElementById('qaAskOverlay')?.classList.remove('open')
+}
+
+async function answerQaAsk(answer) {
+  const req = qaAuto.ask
+  if (!req) return
+  const note = (document.getElementById('qaAskNote')?.value || '').trim()
+  if (answer.action === 'stop' && !confirm('QA 실행 전체를 중단할까요?')) return
+  closeQaAsk()
+  const r = await window.db.qaAnswer({ requestId: req.requestId, answer: { ...answer, note } })
+  if (!r.ok) showToast(r.message, true)
+}
+
+// ── 결과 ──
+async function openQaResults(runId) {
+  const appId = qaCurAppId()
+  const r = await window.db.qaRuns({ appId })
+  qaAuto.runs = r.ok ? r.runs : []
+  const sel = document.getElementById('qaRunSelect')
+  if (sel) {
+    sel.replaceChildren(...qaAuto.runs.map(run => {
+      const s = run.summary || {}
+      const when = new Date(run.startedAt).toLocaleString()
+      const build = run.build ? ` · v${run.build.versionName} (${run.build.versionCode})` : ''
+      return new Option(`${when} · ${run.app?.variantName || run.app?.variant}${build}${run.update ? ' · 업데이트 테스트' : ''} — P${s.Pass || 0}/F${s.Fail || 0}/B${s.Blocked || 0}${run.stopped ? ' (중단)' : ''}`, run.id)
+    }))
+  }
+  document.getElementById('qaResultOverlay')?.classList.add('open')
+  const id = runId && qaAuto.runs.some(x => x.id === runId) ? runId : qaAuto.runs[0]?.id
+  if (!id) {
+    qaAuto.run = null
+    setText('qaResultHead', '아직 실행 기록이 없습니다')
+    document.getElementById('qaResultTable')?.replaceChildren()
+    return
+  }
+  if (sel) sel.value = id
+  await loadQaRunDetail(id)
+}
+
+function closeQaResults() { document.getElementById('qaResultOverlay')?.classList.remove('open') }
+
+async function loadQaRunDetail(runId) {
+  const r = await window.db.qaRunDetail(runId)
+  if (!r.ok) { showToast(r.message, true); return }
+  qaAuto.run = r.run
+  renderQaResults()
+}
+
+function qaChecklistItem(id) { return qaAuto.checklist?.items.find(i => i.id === id) || null }
+
+function renderQaResults() {
+  const run = qaAuto.run
+  const table = document.getElementById('qaResultTable')
+  if (!run || !table) return
+  const s = run.summary || {}
+  const build = run.build ? `v${run.build.versionName} (${run.build.versionCode})` : '버전 알 수 없음'
+  const upd = run.update ? ` · 업데이트 테스트 ${run.update.base ? `v${run.update.base.versionName}` : '?'} → ${run.update.update ? `v${run.update.update.versionName}` : '?'}` : ''
+  const scope = { default: '기본 범위', failed: '지난 Fail·Blocked', all: '전체', custom: '직접 선택' }[run.scope?.mode] || ''
+  setText('qaResultHead', `${run.app?.name} ${run.app?.variantName} · ${build}${upd} · ${scope} · ${run.checklist || ''} — `
+    + `Pass ${s.Pass || 0} · Fail ${s.Fail || 0} · Blocked ${s.Blocked || 0} · Skipped ${s.Skipped || 0} · To do ${s['To do'] || 0}`
+    + ` · 회귀 ${s.regression || 0} · 수정 확인 ${s.fixed || 0} · 미해결 ${s.still || 0}${run.stopped ? ' · 중단됨' : ''}${run.error ? ` · ${run.error}` : ''}`)
+
+  const show = document.getElementById('qaResultShow')?.value || ''
+  const rows = run.items.filter(it => {
+    if (show === 'bad') return it.status === 'Fail' || it.status === 'Blocked'
+    if (show === 'regression' || show === 'fixed') return it.change === show
+    if (show === 'before') return it.phase === 'before'
+    return true
+  })
+  const head = qaEl2('tr')
+  for (const h of ['ID', '항목', '결과', '변화', '사유', '증거', 'Jira']) head.append(qaEl2('th', '', h))
+  const body = rows.map(it => {
+    const tr = qaEl2('tr', it.change === 'regression' ? 'qa-row-regression' : '')
+    const item = qaChecklistItem(it.id)
+    tr.append(qaEl2('td', 'qa-mono', it.id + (it.phase ? `\n${QA_PHASE_LABEL[it.phase] || it.phase}` : '')))
+    tr.append(qaEl2('td', '', it.title || item?.title || ''))
+    const st = qaEl2('td')
+    st.append(qaEl2('span', `qa-badge qa-st-${QA_STATUS_CLASS[it.status] || 'todo'}`, it.status))
+    if (it.mode && it.mode !== 'auto') st.append(qaEl2('span', 'qa-mode', it.mode === 'manual' ? '사람' : '반자동'))
+    tr.append(st)
+    const ch = qaEl2('td')
+    if (QA_CHANGE_LABEL[it.change]) ch.append(qaEl2('span', `qa-badge qa-ch-${it.change}`, QA_CHANGE_LABEL[it.change]))
+    if (it.prev) ch.append(qaEl2('div', 'qa-prev', `지난: ${it.prev.status}${it.prev.jira ? ` · ${it.prev.jira}` : ''}`))
+    tr.append(ch)
+    const reason = qaEl2('td', 'qa-reason', it.reason || '')
+    if (it.notes?.length) reason.title = it.notes.join('\n')
+    tr.append(reason)
+    const ev = qaEl2('td')
+    for (const f of it.evidence || []) {
+      const name = f.split('/').pop()
+      const label = /screen\.png$/.test(name) ? '화면' : /\.xml$/.test(name) ? '구조' : /logcat/.test(name) ? '로그' : name
+      const b = qaEl2('button', 'link-btn', `${name[0]} ${label}`)
+      b.title = f
+      b.onclick = () => window.db.qaEvidenceOpen({ runId: run.id, file: f })
+      ev.append(b)
+    }
+    tr.append(ev)
+    const jr = qaEl2('td')
+    if (it.jira) {
+      const b = qaEl2('button', 'link-btn', it.jira)
+      b.onclick = () => jiraCfgCache.site && window.db.jiraOpen(`https://${String(jiraCfgCache.site).replace(/^https?:\/\//, '').replace(/\/+$/, '')}/browse/${it.jira}`)
+      jr.append(b)
+    } else if (it.status === 'Fail' || it.status === 'Blocked') {
+      const b = qaEl2('button', 'btn-sm', '등록')
+      b.onclick = () => openJiraForQa(run, it)
+      jr.append(b)
+    }
+    tr.append(jr)
+    return tr
+  })
+  table.replaceChildren(qaEl2('thead'), qaEl2('tbody'))
+  table.tHead.append(head)
+  table.tBodies[0].append(...body)
+  if (!rows.length) {
+    const tr = qaEl2('tr')
+    const td = qaEl2('td', 'qa-empty', '해당하는 항목이 없습니다')
+    td.colSpan = 7
+    tr.append(td)
+    table.tBodies[0].append(tr)
+  }
+}
+
+async function exportQaRun() {
+  if (!qaAuto.run) return
+  const r = await window.db.qaExport(qaAuto.run.id)
+  if (r.canceled) return
+  showToast(r.ok ? `CSV 저장: ${r.filePath}` : r.message, !r.ok)
+}
+
+function openQaRunFolder() {
+  if (qaAuto.run) window.db.qaEvidenceOpen({ runId: qaAuto.run.id })
+}
+
+// ── 체크리스트 항목 창 ──
+function openQaChecklist() {
+  if (!qaAuto.checklist) { showToast('체크리스트를 먼저 가져와 주세요', true); return }
+  const c = qaAuto.checklist
+  setText('qaChecklistHead', `${c.name || '체크리스트'} · ${c.items.length}개 항목 · 가져온 파일: ${c.file || ''}`)
+  document.getElementById('qaChecklistOverlay')?.classList.add('open')
+  renderQaChecklist()
+}
+
+function closeQaChecklist() { document.getElementById('qaChecklistOverlay')?.classList.remove('open') }
+
+function qaVisibleChecklist() {
+  const c = qaAuto.checklist
+  if (!c) return []
+  const q = (document.getElementById('qaChecklistFilter')?.value || '').trim().toLowerCase()
+  const show = document.getElementById('qaChecklistShow')?.value || ''
+  const scMap = new Map(qaAuto.scenarios.map(s => [s.id, s]))
+  return c.items.filter(it => {
+    if (q && !`${it.id} ${it.major} ${it.minor} ${it.title}`.toLowerCase().includes(q)) return false
+    const sc = scMap.get(it.id)
+    if (show === 'auto') return sc?.mode === 'auto'
+    if (show === 'noscenario') return !sc
+    if (show === 'failed') return ['Fail', 'Blocked'].includes(qaAuto.latest[it.id]?.status)
+    return true
+  })
+}
+
+function renderQaChecklist() {
+  const table = document.getElementById('qaChecklistTable')
+  if (!table) return
+  const scMap = new Map(qaAuto.scenarios.map(s => [s.id, s]))
+  const rows = qaVisibleChecklist()
+  const head = qaEl2('tr')
+  for (const h of ['', 'ID', '분류', '항목', '중요도', '시나리오', '최근 결과']) head.append(qaEl2('th', '', h))
+  const body = rows.map(it => {
+    const tr = qaEl2('tr')
+    const cb = qaEl2('input')
+    cb.type = 'checkbox'
+    cb.checked = qaAuto.picked.has(it.id)
+    cb.onchange = () => { if (cb.checked) qaAuto.picked.add(it.id); else qaAuto.picked.delete(it.id); renderQaPickedInfo() }
+    const c0 = qaEl2('td'); c0.append(cb); tr.append(c0)
+    tr.append(qaEl2('td', 'qa-mono', it.id))
+    tr.append(qaEl2('td', '', [it.major, it.minor].filter(Boolean).join(' › ')))
+    const t = qaEl2('td', '', it.title)
+    t.title = [it.pre && `사전 조건: ${it.pre}`, it.steps && `절차: ${it.steps}`, it.expected && `기대 결과: ${it.expected}`].filter(Boolean).join('\n\n')
+    tr.append(t)
+    tr.append(qaEl2('td', '', it.priorityText || (it.priority ?? '')))
+    const sc = scMap.get(it.id)
+    tr.append(qaEl2('td', '', sc ? { auto: '자동', semi: '반자동', manual: '수동' }[sc.mode] + (sc.update ? ` · 업데이트 ${sc.update}` : '') : '없음'))
+    const last = qaAuto.latest[it.id]
+    const lt = qaEl2('td')
+    if (last) lt.append(qaEl2('span', `qa-badge qa-st-${QA_STATUS_CLASS[last.status] || 'todo'}`, last.status))
+    tr.append(lt)
+    return tr
+  })
+  table.replaceChildren(qaEl2('thead'), qaEl2('tbody'))
+  table.tHead.append(head)
+  table.tBodies[0].append(...body)
+  renderQaPickedInfo()
+}
+
+function renderQaPickedInfo() { setText('qaPickedInfo', `선택 ${qaAuto.picked.size}개`) }
+
+function pickQaChecklist(on) {
+  if (on) qaVisibleChecklist().forEach(it => qaAuto.picked.add(it.id))
+  else qaAuto.picked.clear()
+  renderQaChecklist()
+}
+
+function useQaPicked() {
+  if (!qaAuto.picked.size) { showToast('실행할 항목을 골라 주세요', true); return }
+  saveQaPicked(qaCurAppId(), [...qaAuto.picked])
+  const scope = document.getElementById('qaRunScope')
+  if (scope) scope.value = 'custom'
+  closeQaChecklist()
+  previewQaRun()
+  showToast(`고른 ${qaAuto.picked.size}개 항목으로 실행합니다`)
+}
+
+// ── 테스트 계정 창 ──
+async function openQaAccounts() {
+  const r = await window.db.qaAccountsLoad()
+  qaAuto.accounts = r.ok ? r.accounts : []
+  renderQaAccountList()
+  newQaAccount()
+  document.getElementById('qaAccountOverlay')?.classList.add('open')
+}
+
+function closeQaAccounts() {
+  document.getElementById('qaAccountOverlay')?.classList.remove('open')
+  renderQaAccountSelects()
+}
+
+const QA_ACC_FIELDS = { qaAccLabel: 'label', qaAccId: 'id', qaAccCompany: 'company', qaAccPhone: 'phone', qaAccName: 'name', qaAccEmail: 'email' }
+
+function renderQaAccountList() {
+  const box = document.getElementById('qaAccountList')
+  if (!box) return
+  if (!qaAuto.accounts.length) { box.replaceChildren(qaEl2('div', 'qa-empty', '등록된 계정이 없습니다')); return }
+  box.replaceChildren(...qaAuto.accounts.map(a => {
+    const row = qaEl2('div', 'qa-account-row')
+    row.append(qaEl2('span', '', `${a.label}${a.id ? ` · ${a.id}` : ''}${a.hasPassword ? ' · 비밀번호 저장됨' : ''}`))
+    const edit = qaEl2('button', 'btn-sm', '수정')
+    edit.onclick = () => editQaAccount(a)
+    const del = qaEl2('button', 'btn-sm', '삭제')
+    del.onclick = async () => {
+      if (!confirm(`${a.label} 계정을 삭제할까요?`)) return
+      const r = await window.db.qaAccountsDelete(a.key)
+      if (!r.ok) { showToast(r.message, true); return }
+      await openQaAccounts()
+    }
+    row.append(edit, del)
+    return row
+  }))
+}
+
+function newQaAccount() {
+  const key = document.getElementById('qaAccKey')
+  if (key) key.value = ''
+  for (const id of Object.keys(QA_ACC_FIELDS)) { const el = document.getElementById(id); if (el) el.value = '' }
+  const pw = document.getElementById('qaAccPassword')
+  if (pw) { pw.value = ''; pw.placeholder = '비밀번호 ($account.password)' }
+}
+
+function editQaAccount(a) {
+  const key = document.getElementById('qaAccKey')
+  if (key) key.value = a.key
+  for (const [id, f] of Object.entries(QA_ACC_FIELDS)) { const el = document.getElementById(id); if (el) el.value = a[f] || '' }
+  const pw = document.getElementById('qaAccPassword')
+  if (pw) { pw.value = ''; pw.placeholder = a.hasPassword ? '저장됨 — 바꿀 때만 입력' : '비밀번호 ($account.password)' }
+}
+
+async function saveQaAccount() {
+  const acc = { key: document.getElementById('qaAccKey')?.value || '' }
+  for (const [id, f] of Object.entries(QA_ACC_FIELDS)) acc[f] = (document.getElementById(id)?.value || '').trim()
+  acc.password = document.getElementById('qaAccPassword')?.value || ''
+  if (!acc.id && !acc.label) { showToast('아이디나 이름을 입력해 주세요', true); return }
+  const r = await window.db.qaAccountsSave(acc)
+  const pw = document.getElementById('qaAccPassword')
+  if (pw) pw.value = ''                     // 입력칸에 비밀번호를 남겨 두지 않는다
+  if (!r.ok) { showToast(r.message, true); return }
+  if (!r.encrypted) mirrorLog('[QA] OS 암호화를 쓸 수 없어 테스트 계정 비밀번호가 평문으로 저장됩니다')
+  showToast('테스트 계정을 저장했습니다')
+  await openQaAccounts()
+}
+
+// ── 실패 항목 → Jira ──
+// 기존 Jira 등록 창을 QA 내용으로 채워 연다. 자동 등록은 하지 않는다 (사람이 확인 후 등록).
+let jiraQaContext = null
+
+function buildQaJiraDescription(run, it, item) {
+  const sec = (title, text) => (text ? `h3. ${title}\n${text}\n\n` : '')
+  const build = run.build ? `v${run.build.versionName} (${run.build.versionCode})` : '알 수 없음'
+  const devices = Object.entries(run.devices || {}).map(([k, d]) => `* 역할 ${k}: ${d.serial} (${d.variant})`).join('\n')
+  return sec('사전 조건', item?.pre)
+    + sec('절차', item?.steps)
+    + sec('기대 결과', item?.expected)
+    + sec('실제 결과', `${it.status} — ${it.reason || ''}`)
+    + sec('환경', [`* 앱: ${run.app?.name} ${run.app?.variantName} ${build}`, devices,
+      `* QA 실행: ${run.id}${it.phase ? ` (${QA_PHASE_LABEL[it.phase]})` : ''} · 체크리스트 ${run.checklist || ''}`].filter(Boolean).join('\n'))
+    + (it.evidence?.length ? `_스크린샷·화면 구조·로그는 첨부 파일을 확인하세요._\n` : '')
+}
+
+async function openJiraForQa(run, it) {
+  const item = qaChecklistItem(it.id)
+  jiraQaContext = { runId: run.id, itemId: it.id, phase: it.phase || '', evidence: it.evidence || [] }
+  await openJiraModal(false, true)
+  if (!document.getElementById('jiraOverlay')?.classList.contains('open')) { jiraQaContext = null; return }
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v }
+  set('jiraMSummary', `[QA][${it.id}] ${it.title || item?.title || ''}`.trim())
+  set('jiraMDesc', buildQaJiraDescription(run, it, item))
+  // 증거 파일을 붙이므로 지금 화면 캡처·화면 LogCat 은 기본으로 끈다
+  const shot = document.getElementById('jiraMShot'); if (shot) shot.checked = false
+  const log = document.getElementById('jiraMLog'); if (log) log.checked = false
+}
+
+// QA 화면 초기 연결 — 실행 중에 렌더러가 새로 고쳐져도 실행 상태를 되찾는다
+window.db.onQaProgress(onQaProgress)
+window.db.onQaPrompt(openQaAsk)
+window.db.qaStatus().then(s => { if (s?.running) { qaAuto.runId = s.runId; setQaRunningUI(true); setQaProgress('실행 중 (진행 정보를 다시 받는 중)') } }).catch(() => { })
 
 // ── 모달 ───────────────────────────────────────────────────────
 function openConnectModal() {
@@ -3866,8 +4466,10 @@ function buildJiraDescription(withIssue) {
   ].join('\n')
 }
 
-async function openJiraModal(fromIssue = false) {
-  if (!state.serial) { showToast('기기를 먼저 연결해 주세요', true); return }
+// fromQa: QA 결과의 실패 항목에서 연 경우 — 미러링 중인 기기가 없어도 되고(증거 파일을 붙인다),
+// 쓰다 만 일반 초안을 불러오지도 덮어쓰지도 않는다.
+async function openJiraModal(fromIssue = false, fromQa = false) {
+  if (!state.serial && !fromQa) { showToast('기기를 먼저 연결해 주세요', true); return }
   await loadJiraSettings()
   if (!jiraCfgCache.hasToken) {
     showToast('Jira 연결 정보를 먼저 입력해 주세요', true)
@@ -3898,7 +4500,7 @@ async function openJiraModal(fromIssue = false) {
   clearJiraVideo()
 
   // 지난번에 쓰다 만 내용이 있으면 그걸 살리고, 없으면 새 초안을 만든다
-  const draft = loadJiraDraft()
+  const draft = fromQa ? null : loadJiraDraft()
   jiraFieldValues = draft?.values || {}
   jiraShowAllFields = false
   await refreshIssueTypes(draft?.type || jiraCfgCache.issueType || '버그')   // select 는 채운 뒤에야 값이 잡힌다
@@ -3952,7 +4554,9 @@ function clearJiraDraft() { localStorage.removeItem(JIRA_DRAFT_KEY) }
 // save=false 는 등록을 마친 뒤에 쓴다. 기본값으로 두면 지운 임시 저장분을 닫으면서
 // 화면에 남은 값으로 도로 써버린다 (실제로 그렇게 초기화가 안 됐다).
 function closeJiraModal(save = true) {
-  if (save) saveJiraDraft()
+  // QA 결과에서 연 창은 일반 초안으로 저장하지 않는다 (다음 일반 등록에 QA 내용이 끼지 않게)
+  if (save && !jiraQaContext) saveJiraDraft()
+  jiraQaContext = null
   $('jiraOverlay')?.classList.remove('open')
   closePickers()
   if (jiraPausedLogcat && jiraPausedDevice?.serial) {
@@ -3992,7 +4596,10 @@ async function submitJira() {
   if (!pickerValue('jiraMAssignee')) { showToast('담당자를 선택해 주세요', true); togglePicker('jiraMAssignee'); return }
 
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i>등록 중...' }
+  const qaCtx = jiraQaContext
   const r = await window.db.jiraCreate({
+    // QA 실패 항목이면 실행 기록의 증거 파일을 메인이 붙인다 (경로는 메인이 실행 기록 폴더 안인지 확인한다)
+    ...(qaCtx ? { qaRunId: qaCtx.runId, qaItemId: qaCtx.itemId, qaEvidence: qaCtx.evidence } : {}),
     project: jiraCfgCache.project,            // 연결 설정에서 고정한 프로젝트로 보낸다
     issueType: v('jiraMType') || '버그',
     summary: v('jiraMSummary'), description: $('jiraMDesc')?.value || '',
@@ -4008,8 +4615,14 @@ async function submitJira() {
 
   if (!r.ok) { showToast(r.message || 'Jira 등록 실패', true); mirrorLog('[Jira] 등록 실패 — ' + r.message); return }
   closeJiraModal(false)     // 등록했으니 임시 저장 없이 닫고
-  clearJiraDraft()          // 저장분도 버린다
+  if (!qaCtx) clearJiraDraft()   // 저장분도 버린다 (QA 에서 연 창은 일반 초안을 건드리지 않았다)
   jiraFieldValues = {}
+  if (qaCtx) {
+    // 실행 기록에 티켓 키를 남겨 다음 회차에서 "수정 확인 / 미해결" 과 함께 보이게 한다
+    const l = await window.db.qaLinkJira({ runId: qaCtx.runId, itemId: qaCtx.itemId, phase: qaCtx.phase, key: r.key })
+    if (!l.ok) mirrorLog(`[QA] Jira 키를 실행 기록에 남기지 못했습니다: ${l.message}`)
+    if (qaAuto.run?.id === qaCtx.runId) loadQaRunDetail(qaCtx.runId)
+  }
   showToast(`${r.key} 등록 완료${r.sprint ? ` · 스프린트 '${r.sprint}'` : ''}`)
   mirrorLog(`[Jira] ${r.key} 등록 — ${r.url}` + (r.sprint ? ` · 스프린트 ${r.sprint}` : '') + (r.warn ? ` (${r.warn})` : ''))
   if (r.warn) showToast(r.warn, true)

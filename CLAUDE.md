@@ -98,7 +98,27 @@ Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF
 
 **스프린트는 이슈를 만든 뒤 Agile API(`POST /rest/agile/1.0/sprint/{id}/issue`)로 넣는다.** 스프린트는 사이트마다 번호가 다른 커스텀 필드이고 생성 화면에 없으면 생성 API 가 거부하므로 생성 본문에 넣지 않는다. 설정(`jira.json`)은 `sprintMode`(`off` / `active` / `fixed`)·`boardId`·`boardName`·`sprintId`·`sprintName`. `active` 는 발행할 때마다 `resolveSprint()` 가 보드의 진행 중 스프린트를 고른다(병렬 스프린트면 그 보드에서 만든 것 → 먼저 끝나는 것, `pickActiveSprint()` — 렌더러의 안내 문구용 `jiraPickActive()` 와 규칙을 맞춰 둘 것). 완료된 스프린트는 Jira 가 거부하므로 `fixed` 는 넣기 전에 상태를 확인한다. 스프린트 실패는 첨부 실패처럼 `r.warn` 으로만 돌려준다(이슈는 이미 만들어졌다). Agile API 의 401/403 은 스코프형 토큰의 Jira Software 권한 누락일 수 있어 `agileErr()` 가 그 안내를 붙인다.
 
-QA 화면 확인은 `src/qa-driver.js` 가 ADB UIAutomator XML을 읽고 `src/qa-xml.js` 가 접근성 요소와 좌표를 파싱한다. 렌더러의 QA 탭은 역할별 기기·앱 변형을 선택하고 화면 요소를 확인·탭한다(좌표 탭, 글자로 누르기). 현재 단계에는 시나리오 실행기와 결과 보고가 포함되지 않는다.
+QA 화면 확인은 `src/qa-driver.js` 가 ADB UIAutomator XML을 읽고 `src/qa-xml.js` 가 접근성 요소와 좌표를 파싱한다. 렌더러의 QA 탭은 역할별 기기·앱 변형을 선택하고 화면 요소를 확인·탭한다(좌표 탭, 글자로 누르기).
+
+**QA 자동 진행** — 체크리스트(CSV) × 시나리오(JSON) → 실행기 → 회차 기록. 순수 로직은 전부 자가진단이 있다(실행기는 가짜 기기로).
+
+```
+qa-checklist.js  시트 CSV → 항목 (ID 모양으로 표 시작을 찾고, 열은 키워드로, 병합 셀은 위 값을 이어 씀)
+qa-scenario.js   시나리오 검증 · 공통 절차(use, $dev) 펼치기 · 변수($account.id …) 치환
+qa-runner.js     createRunner({ roles, scenarios, procedures, hooks }) → run({ items, update })
+qa-results.js    항목별 최근 결과 · 변화(fixed/regression/still/new) · 실행 범위 · 시트 CSV
+main.js          qa:accounts-* / qa:checklist(-import) / qa:scenarios / qa:run · stop · answer / qa:runs · run-detail / qa:export …
+```
+
+- **실행기는 Electron·adb 를 모른다.** 기기는 드라이버(역할마다 `getQaDriver(serial)`), 파일 저장·사람 응답·APK 설치·logcat 은 `hooks` 로 main 이 넣는다. 그래서 `node src/qa-runner.js` 가 가짜 기기로 판정·teardown·중단·업데이트 흐름을 검사한다. 새 단계 종류는 `qa-scenario.js` 의 `ACTIONS`/`EXPECTS`(검증)와 `qa-runner.js` 의 `execStep()`(실행) 두 곳에 같이 넣는다.
+- 판정: iOS 전용 → Skipped / `variants` 밖 → Skipped / 역할 기기 없음 → Blocked / `pre` 실패 → Blocked / `steps` 실패 → Fail(그 순간 스크린샷·XML) / logcat 의 FATAL EXCEPTION(`Process: <pkg>`)·ANR → Fail. **teardown 은 항상** 돈다(중단 요청이 와도 teardown 은 끝까지, `inTeardown`). 시나리오가 끈 네트워크는 teardown 이 안 켜도 실행기가 켠다.
+- 시나리오가 없는 항목은 `manualForUnscripted`(기본 켬)면 체크리스트 절차·기대 결과를 `ask` 로 띄워 사람이 판정한다.
+- **사람 응답은 `qa:prompt`(메인→렌더러 푸시) → `qa:answer`(requestId) 로 오간다.** `qa:stop` 은 기다리던 응답을 `{ action: 'stop' }` 으로 끝낸다. 푸시 두 개(`qa:progress`, `qa:prompt`)는 preload 에서 `removeAllListeners` 후 등록한다.
+- **지난 결과는 회차가 아니라 항목 단위로 찾는다**(`latestResults()`): 2차를 Fail 만 돌리면 Pass 항목은 2차에 없기 때문. 같은 앱·타입만, 업데이트 전 단계(`phase: 'before'`)와 중단(To do)은 빼고 본다. 기본 범위는 "지난 Pass 인 사람 판정 항목만 뺀다" — 자동 항목은 회귀 확인용으로 늘 다시 돌린다.
+- 저장: `userData/qa-accounts.json`(비밀번호 safeStorage, 렌더러에는 `hasPassword` 만), `qa-checklists/<appId>.json`, `qa-scenarios/<appId>/*.json`(앱에 든 `qa/scenarios/<appId>` 보다 우선), `qa-runs/<runId>/result.json` + 증거. 증거 경로를 렌더러에서 받을 때(`qa:evidence-open`, Jira 첨부 `qaEvidence`)는 `qaEvidencePath()` 로 실행 기록 폴더 안인지 확인한다.
+- QA 실행 중 logcat 은 역할 기기마다 별도 프로세스(`startQaLogcat`)로 받아 항목 구간만 자른다 — 화면의 LogCat 과 무관하다.
+- 업데이트 테스트 실행은 `qaInstallApk()`(앱 선택 창 버튼과 같은 함수)로 기존·업데이트를 설치한다. 기존 버전이 이미 같은 버전이면 `skipped` 로 성공 처리한다.
+- Jira: QA 결과의 실패 항목에서 연 등록 창(`openJiraModal(false, true)`)은 일반 초안을 불러오지도 저장하지도 않고(`jiraQaContext`), 등록 후 `qa:link-jira` 로 티켓 키를 실행 기록에 남긴다.
 
 - **QA 대상 앱 목록은 `src/qa-apps.js` 의 `QA_APPS` 한 곳이다.** 앱 → 타입 → 패키지 구조이고(제로톡 = 무료용 `net.zerotalk.free` / 단체용 사용자 `net.zerotalk.user` / 단체용 관리자 `net.zerotalk.admin`), 새 앱은 여기에 항목만 추가하면 좌측 메뉴의 앱 선택 창과 QA 탭이 그대로 그린다. `validateApps()` 자가진단이 id·패키지 중복을 잡는다. 렌더러는 `qa:apps` 로 받는다.
 - **고른 앱은 전역 하나, 타입은 기기 시리얼마다다** (`localStorage` `db_qa_target` = `{ appId, variants: { [appId]: { [serial]: variantId } } }`). 슬롯(A/B/C)이 아니라 시리얼에 묶어서, 기기 화면 왼쪽 메뉴(`openQaAppPicker()`)와 QA 탭 역할 카드가 같은 값을 보고 서로 반영한다. QA 탭 역할 카드는 저장된 배정이 없으면 같은 글자 슬롯의 기기를 기본으로 잡는다.
@@ -130,7 +150,7 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 - **창 최소 크기와 시작 크기는 별개다.** `pickLaunchSize()` 는 화면 작업 영역에 맞춘 시작 크기만 정하고, 창은 최소 `720×320` 까지 줄일 수 있다. `window:set-min-size` 는 필요한 경우 최소 너비를 더 올릴 수 있지만, 시작 크기를 하한으로 삼지 않는다.
 - **바이너리 경로는 `resolveBin()` 을 통해서만 얻는다.** `bin/` → macOS/Linux 표준 경로(`/opt/homebrew/bin` 등) → `where`/`which` 순으로 탐색한다. macOS GUI 실행 시 `$PATH` 가 비어 있는 문제 때문에 필요한 로직이다. 패키징 상태에서 `resourcesPath/bin` 이 쓰기 불가면 `userData/bin` 으로 복사 후 전환한다 (`main.js` 상단).
 - **`spawn` 하는 곳에는 `proc.on('error')` 를 반드시 단다.** 핸들러가 없으면 spawn 실패가 처리되지 않은 이벤트로 올라와 메인 프로세스가 통째로 죽는다.
-- UI 설정값은 `localStorage` 에 `db_` 접두사로 저장한다: `db_screen_width`, `db_bitrate`, `db_fps`, `db_theme`, `db_logcat_font`, `db_log_app_only`, `db_tools_collapsed`, `db_jira_draft`, `db_jira_pins`, `db_jira_projects`, `db_qa_roles`, `db_qa_target`.
+- UI 설정값은 `localStorage` 에 `db_` 접두사로 저장한다: `db_screen_width`, `db_bitrate`, `db_fps`, `db_theme`, `db_logcat_font`, `db_log_app_only`, `db_tools_collapsed`, `db_jira_draft`, `db_jira_pins`, `db_jira_projects`, `db_qa_roles`, `db_qa_target`, `db_qa_role_accounts`, `db_qa_picked`.
 
 ## 빌드 / 배포
 
