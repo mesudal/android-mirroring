@@ -818,6 +818,10 @@ ipcMain.handle('jira:load', () => {
     project: c.project || '', projectName: c.projectName || '',
     issueType: c.issueType || '버그',
     fieldDefs: c.fieldDefs || [], fieldValues: c.fieldValues || {},
+    // 스프린트: 'off'(백로그) | 'active'(발행할 때마다 진행 중인 스프린트) | 'fixed'(고른 스프린트)
+    sprintMode: c.sprintMode || 'off',
+    boardId: c.boardId || null, boardName: c.boardName || '',
+    sprintId: c.sprintId || null, sprintName: c.sprintName || '',
     hasToken: !!c.token, encrypted: !!c.enc,
   }
 })
@@ -833,7 +837,14 @@ ipcMain.handle('jira:save', (_, cfg) => {
     issueType: keep(cfg.issueType, prev.issueType), token: keep(cfg.token, prev.token),
     // 고정 필드는 '없애기'도 가능해야 하므로 보낸 그대로 덮어쓴다
     fieldDefs: cfg.fieldDefs ?? prev.fieldDefs, fieldValues: cfg.fieldValues ?? prev.fieldValues,
+    // 스프린트 설정도 '지정 안 함'으로 되돌릴 수 있어야 하므로 보낸 값이 있으면 그대로 덮어쓴다
+    sprintMode: cfg.sprintMode ?? prev.sprintMode ?? 'off',
+    boardId: cfg.sprintMode !== undefined ? (cfg.boardId || null) : prev.boardId,
+    boardName: cfg.sprintMode !== undefined ? (cfg.boardName || '') : prev.boardName,
+    sprintId: cfg.sprintMode !== undefined ? (cfg.sprintId || null) : prev.sprintId,
+    sprintName: cfg.sprintMode !== undefined ? (cfg.sprintName || '') : prev.sprintName,
   }
+  if (!['off', 'active', 'fixed'].includes(next.sprintMode)) next.sprintMode = 'off'
   try {
     saveJiraCfg(next)
     return { ok: true, encrypted: safeStorage.isEncryptionAvailable() }
@@ -854,6 +865,11 @@ ipcMain.handle('jira:assignable', (_, { projectKey, query }) =>
 
 ipcMain.handle('jira:fields', (_, { projectKey, issueTypeId }) =>
   jira.listCreateFields(loadJiraCfg(), projectKey, issueTypeId))
+
+// 스프린트 설정용 — 프로젝트의 보드, 보드의 진행 중·예정 스프린트
+ipcMain.handle('jira:boards', (_, projectKey) => jira.listBoards(loadJiraCfg(), projectKey))
+
+ipcMain.handle('jira:sprints', (_, boardId) => jira.listSprints(loadJiraCfg(), boardId))
 
 ipcMain.handle('jira:create', async (_, issue) => {
   const cfg = loadJiraCfg()
@@ -885,6 +901,20 @@ ipcMain.handle('jira:create', async (_, issue) => {
       if (!a.ok) r.warn = (r.warn ? r.warn + ' / ' : '') + '영상 첨부 실패: ' + a.message
     } catch (e) {
       r.warn = (r.warn ? r.warn + ' / ' : '') + '영상 파일을 읽지 못했습니다: ' + e.message
+    }
+  }
+
+  // 스프린트 지정 — 첨부와 마찬가지로 실패해도 이슈는 이미 만들어졌으니 경고로만 돌려준다.
+  // '진행 중' 모드는 발행할 때마다 지금 진행 중인 스프린트를 찾으므로 스프린트가 바뀌어도 설정을 다시 할 필요가 없다.
+  const sprintWarn = msg => { r.warn = (r.warn ? r.warn + ' / ' : '') + msg }
+  if (cfg.sprintMode === 'active' || cfg.sprintMode === 'fixed') {
+    const target = await jira.resolveSprint(cfg, cfg)
+    if (!target.ok) sprintWarn('스프린트 지정 실패: ' + target.message)
+    else if (!target.sprint) { if (target.message) sprintWarn(target.message) }
+    else {
+      const a = await jira.addIssueToSprint(cfg, target.sprint.id, r.key)
+      if (a.ok) r.sprint = target.sprint.name
+      else sprintWarn(`스프린트 '${target.sprint.name}' 추가 실패: ${a.message}`)
     }
   }
   return r

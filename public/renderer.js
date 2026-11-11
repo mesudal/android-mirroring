@@ -3293,6 +3293,7 @@ async function loadJiraSettings() {
   updateJiraStatus()
   // 설정이 이미 끝난 상태로 다시 열면 선택지를 바로 보여준다
   showJiraPickRow(!!(c.hasToken && c.project))
+  renderJiraSprintSettings(c)
 }
 
 // 설정 탭에는 상태 두 줄만 남기고 입력은 팝업에서 받는다 (사이드 패널이 너무 좁다)
@@ -3460,7 +3461,11 @@ async function saveJiraSettings() {
   const v = id => ($(id)?.value || '').trim()
   // 아직 연결 테스트 전이라 프로젝트를 못 고른 상태면 빈 값을 보내 기존 설정을 지우지 않는다
   const project = pickerValue('jiraProject').toUpperCase()
+  // 스프린트 선택지는 연결이 확인된 뒤에만 보인다. 안 보일 때는 보내지 않아 기존 설정을 그대로 둔다.
+  const sprint = $('jiraSprintRow')?.style.display === 'none' ? { ok: true, values: {} } : collectJiraSprintSettings()
+  if (!sprint.ok) { showToast(sprint.message, true); return false }
   const r = await window.db.jiraSave({
+    ...sprint.values,
     email: v('jiraEmail'),                      // site 는 보내지 않는다 — 메인의 고정값을 쓴다
     project, projectName: project ? projectNameOf(project) : '',
     // issueType 은 등록 팝업에서 고르므로 여기서 보내지 않는다 (메인이 기존 값을 유지)
@@ -3673,7 +3678,7 @@ function fillJiraProjectList(selected) {
   const list = jiraProjects.slice()
   if (keep && !list.some(p => p.key === keep)) list.unshift({ key: keep, name: jiraCfgCache.projectName || keep })
   const items = list.map(p => ({ value: p.key, label: `${p.name} - ${p.key}` }))
-  setPickerItems('jiraProject', items, keep, null)
+  setPickerItems('jiraProject', items, keep, onJiraProjectPicked)
 }
 
 function projectNameOf(key) {
@@ -3684,6 +3689,157 @@ function projectNameOf(key) {
 function showJiraPickRow(on) {
   const row = $('jiraPickRow')
   if (row) row.style.display = on ? 'flex' : 'none'
+  const sprintRow = $('jiraSprintRow')
+  if (sprintRow) sprintRow.style.display = on ? 'block' : 'none'
+}
+
+// ── 스프린트 설정 ──────────────────────────────────────────────
+// 발행한 티켓을 넣을 스프린트. 실제로 넣는 일은 메인의 jira:create 가 이슈를 만든 뒤에 한다.
+//   off    : 넣지 않는다 (백로그)
+//   active : 발행할 때마다 그 보드의 진행 중인 스프린트를 찾아 넣는다 — 스프린트가 바뀌어도 다시 고를 필요 없다
+//   fixed  : 고른 스프린트에 넣는다 (다음 스프린트 등)
+let jiraBoards = []        // 지금 프로젝트의 보드 [{ id, name, type }]
+let jiraBoardsFor = ''     // jiraBoards 를 받아 온 프로젝트 키
+let jiraSprints = []       // 지금 보드의 진행 중·예정 스프린트
+let jiraSprintToken = 0    // 늦게 도착한 응답을 버리는 용도
+
+function jiraSprintModeValue() { return $('jiraSprintMode')?.value || 'off' }
+function jiraSelectedProject() { return (pickerValue('jiraProject') || jiraCfgCache.project || '').toUpperCase() }
+
+function fillJiraSelect(id, items, selected) {
+  const sel = $(id)
+  if (!sel) return
+  sel.replaceChildren(...items.map(it => {
+    const o = new Option(it.label, String(it.value))
+    o.disabled = !!it.disabled
+    return o
+  }))
+  if (selected !== '' && selected != null) sel.value = String(selected)
+}
+
+function updateJiraSprintFields() {
+  const mode = jiraSprintModeValue()
+  const show = (id, on) => { const el = $(id); if (el) el.style.display = on ? '' : 'none' }
+  show('jiraBoardField', mode !== 'off')
+  show('jiraSprintField', mode === 'fixed')
+}
+
+// 메인과 같은 규칙으로 진행 중인 스프린트를 고른다 (src/jira.js 의 pickActiveSprint) — 안내 문구용
+function jiraPickActive(sprints, boardId) {
+  const active = sprints.filter(s => s.state === 'active')
+  const own = active.filter(s => s.originBoardId === Number(boardId))
+  return (own.length ? own : active).slice()
+    .sort((a, b) => String(a.endDate || '9').localeCompare(String(b.endDate || '9')))[0] || null
+}
+
+function renderJiraSprintSettings(c) {
+  const mode = $('jiraSprintMode')
+  if (mode) mode.value = c.sprintMode || 'off'
+  // 목록을 받기 전에도 저장된 보드·스프린트가 보이게 한 줄씩 넣어 둔다
+  fillJiraSelect('jiraBoard', c.boardId ? [{ value: c.boardId, label: c.boardName || `보드 ${c.boardId}` }] : [], c.boardId)
+  fillJiraSelect('jiraSprint', c.sprintId ? [{ value: c.sprintId, label: c.sprintName || `스프린트 ${c.sprintId}` }] : [], c.sprintId)
+  jiraBoards = []
+  jiraBoardsFor = ''
+  jiraSprints = []
+  updateJiraSprintFields()
+  setText('jiraSprintHint', c.sprintMode === 'off' || !c.sprintMode ? '발행한 티켓은 백로그에 남습니다' : '')
+  if (c.hasToken && c.project && (c.sprintMode === 'active' || c.sprintMode === 'fixed')) refreshJiraBoards()
+}
+
+async function onJiraSprintModeChange() {
+  updateJiraSprintFields()
+  if (jiraSprintModeValue() === 'off') { jiraSprintToken++; setText('jiraSprintHint', '발행한 티켓은 백로그에 남습니다'); return }
+  if (jiraBoardsFor !== jiraSelectedProject()) await refreshJiraBoards()
+  else await refreshJiraSprints()
+}
+
+// 보드는 프로젝트마다 다르다 — 프로젝트를 바꾸면 고른 보드·스프린트를 비우고 다시 받는다
+function onJiraProjectPicked() {
+  jiraBoards = []
+  jiraBoardsFor = ''
+  jiraSprints = []
+  fillJiraSelect('jiraBoard', [], '')
+  fillJiraSelect('jiraSprint', [], '')
+  if (jiraSprintModeValue() !== 'off') refreshJiraBoards()
+}
+
+async function refreshJiraBoards() {
+  const project = jiraSelectedProject()
+  if (!project) { setText('jiraSprintHint', '프로젝트를 먼저 고르세요'); return }
+  const token = ++jiraSprintToken
+  setText('jiraSprintHint', '보드를 불러오는 중...')
+  const r = await window.db.jiraBoards(project)
+  if (token !== jiraSprintToken) return
+  if (!r.ok) { jiraAuthCheck(r, '보드 조회'); setText('jiraSprintHint', r.message); return }
+  jiraBoards = r.boards || []
+  jiraBoardsFor = project
+  const scrum = jiraBoards.filter(b => b.type !== 'kanban')
+  const keep = $('jiraBoard')?.value || jiraCfgCache.boardId
+  const selected = scrum.some(b => String(b.id) === String(keep)) ? keep : (scrum[0]?.id ?? '')
+  fillJiraSelect('jiraBoard', jiraBoards.map(b => ({
+    value: b.id,
+    label: b.type === 'kanban' ? `${b.name} (칸반 — 스프린트 없음)` : b.name,
+    disabled: b.type === 'kanban',
+  })), selected)
+  if (!scrum.length) {
+    setText('jiraSprintHint', `${project} 프로젝트에는 스크럼 보드가 없어 스프린트를 쓸 수 없습니다`)
+    return
+  }
+  await refreshJiraSprints()
+}
+
+async function onJiraBoardChange() {
+  jiraSprints = []
+  await refreshJiraSprints()
+}
+
+async function refreshJiraSprints() {
+  const boardId = $('jiraBoard')?.value
+  if (!boardId) return
+  const token = ++jiraSprintToken
+  setText('jiraSprintHint', '스프린트를 불러오는 중...')
+  const r = await window.db.jiraSprints(boardId)
+  if (token !== jiraSprintToken) return
+  if (!r.ok) { jiraAuthCheck(r, '스프린트 조회'); setText('jiraSprintHint', r.message); return }
+  jiraSprints = r.sprints || []
+  const keep = $('jiraSprint')?.value || jiraCfgCache.sprintId
+  const label = s => `${s.name} (${s.state === 'active' ? '진행 중' : '예정'}${s.endDate ? ` · ~${s.endDate.slice(5, 10)}` : ''})`
+  const selected = jiraSprints.some(s => String(s.id) === String(keep)) ? keep : (jiraSprints[0]?.id ?? '')
+  fillJiraSelect('jiraSprint', jiraSprints.map(s => ({ value: s.id, label: label(s) })), selected)
+  if (jiraSprintModeValue() === 'active') {
+    const now = jiraPickActive(jiraSprints, boardId)
+    setText('jiraSprintHint', now
+      ? `지금 발행하면 '${now.name}' 에 들어갑니다. 스프린트가 바뀌면 자동으로 그때의 진행 중인 스프린트에 들어갑니다.`
+      : '지금은 진행 중인 스프린트가 없습니다 — 그동안 발행한 티켓은 백로그에 남습니다')
+  } else {
+    setText('jiraSprintHint', jiraSprints.length
+      ? '진행 중·예정 스프린트만 나옵니다. 지정한 스프린트가 완료되면 다시 골라야 합니다.'
+      : '진행 중이거나 예정된 스프린트가 없습니다')
+  }
+}
+
+// 저장할 스프린트 설정. 고를 것이 비었으면 저장하지 않고 이유를 돌려준다.
+function collectJiraSprintSettings() {
+  const mode = jiraSprintModeValue()
+  if (mode === 'off') return { ok: true, values: { sprintMode: 'off' } }
+  const boardSel = $('jiraBoard')
+  const boardId = Number(boardSel?.value)
+  if (!boardId) return { ok: false, message: '스프린트를 쓰려면 보드를 골라 주세요' }
+  const boardName = jiraBoards.find(b => b.id === boardId)?.name || boardSel.selectedOptions[0]?.textContent || ''
+  if (mode === 'active') return { ok: true, values: { sprintMode: mode, boardId, boardName } }
+  const sprintId = Number($('jiraSprint')?.value)
+  if (!sprintId) return { ok: false, message: '지정할 스프린트를 골라 주세요' }
+  const sprintName = jiraSprints.find(s => s.id === sprintId)?.name
+    || (String(jiraCfgCache.sprintId) === String(sprintId) ? jiraCfgCache.sprintName : '') || ''
+  return { ok: true, values: { sprintMode: mode, boardId, boardName, sprintId, sprintName } }
+}
+
+// 등록 팝업 머리말에 붙이는 "어디로 들어가는지" 설명
+function jiraSprintTargetText() {
+  const c = jiraCfgCache
+  if (c.sprintMode === 'active') return ` · 스프린트: ${c.boardName || '보드'} 의 진행 중인 스프린트`
+  if (c.sprintMode === 'fixed') return ` · 스프린트: ${c.sprintName || c.sprintId}`
+  return ''
 }
 
 // 티켓 본문 초안. 손으로 채울 자리는 비워두고 환경만 확실히 박아 넣는다.
@@ -3738,7 +3894,7 @@ async function openJiraModal(fromIssue = false) {
     withActiveDevice(jiraPausedDevice, () => setLogcatRunning(false))
   }
 
-  setText('jiraMTarget', `${jiraCfgCache.projectName ? jiraCfgCache.projectName + ' - ' : ''}${jiraCfgCache.project} 에 등록합니다`)
+  setText('jiraMTarget', `${jiraCfgCache.projectName ? jiraCfgCache.projectName + ' - ' : ''}${jiraCfgCache.project} 에 등록합니다${jiraSprintTargetText()}`)
   clearJiraVideo()
 
   // 지난번에 쓰다 만 내용이 있으면 그걸 살리고, 없으면 새 초안을 만든다
@@ -3854,8 +4010,8 @@ async function submitJira() {
   closeJiraModal(false)     // 등록했으니 임시 저장 없이 닫고
   clearJiraDraft()          // 저장분도 버린다
   jiraFieldValues = {}
-  showToast(`${r.key} 등록 완료`)
-  mirrorLog(`[Jira] ${r.key} 등록 — ${r.url}` + (r.warn ? ` (${r.warn})` : ''))
+  showToast(`${r.key} 등록 완료${r.sprint ? ` · 스프린트 '${r.sprint}'` : ''}`)
+  mirrorLog(`[Jira] ${r.key} 등록 — ${r.url}` + (r.sprint ? ` · 스프린트 ${r.sprint}` : '') + (r.warn ? ` (${r.warn})` : ''))
   if (r.warn) showToast(r.warn, true)
   window.db.jiraOpen(r.url)
 }

@@ -186,6 +186,7 @@ nav button, nav .conn-badge { -webkit-app-region:no-drag; }
 .link-btn i { font-size:13px; }
 .jira-field .modal-input { margin-bottom:4px; }
 .jira-field small { display:block; font-size:11px; color:var(--muted); line-height:1.5; }
+.jira-sprint-hint { display:block; font-size:11px; color:var(--muted); line-height:1.5; margin:-6px 0 14px; min-height:16px; }
 /* 직접 만든 드롭다운 — 네이티브 select 는 목록이 길면 위로 뒤집히는데 그걸 막을 방법이 없다.
    패널을 우리가 위치시키므로 항상 아래로 열리고, 개수가 많아 검색칸도 같이 둔다. */
 .picker { position:relative; }
