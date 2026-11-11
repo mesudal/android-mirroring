@@ -117,6 +117,7 @@
              클립보드 탭은 양방향 자동 동기화로 대체할 예정이라 내렸다 (docs/TODO.md 참고). -->
         <!-- 패킷 탭 — 기능은 살아 있고 화면에만 노출하지 않는다 -->
         <div class="tool-tab" style="display:none" onclick="switchPage('packet',this)"><i class="ti ti-spy"></i>패킷</div>
+        <div class="tool-tab" onclick="switchPage('qa',this);qaOnShow()"><i class="ti ti-checklist"></i>QA</div>
         <div class="tool-tab" onclick="switchPage('settings',this)"><i class="ti ti-settings"></i>설정</div>
       </div>
 
@@ -220,6 +221,36 @@
           <p>모든 파일 형식 지원</p>
         </div>
         <div class="install-queue" id="fileQueue"></div>
+      </div>
+
+      <!-- QA 자동화 — 지금은 화면 요소 보기(시나리오 작성용)와 글자로 누르기만 있다.
+           미러링 대상(state.serial)과 별개로 기기를 고른다. -->
+      <div class="page" id="page-qa">
+        <div class="ctrl-card">
+          <div class="ctrl-title">대상 기기</div>
+          <div class="qa-row">
+            <select id="qaDevice" class="qa-input"></select>
+            <button class="btn-sm" onclick="qaRefreshDevices()" title="기기 목록 새로고침"><i class="ti ti-refresh"></i></button>
+          </div>
+        </div>
+        <div class="ctrl-card">
+          <div class="ctrl-title">글자로 누르기</div>
+          <div class="qa-row">
+            <input type="text" id="qaTapText" class="qa-input" placeholder="버튼 글자 (예: 확인)" spellcheck="false"
+              onkeydown="if(event.key==='Enter')qaTapByText()">
+            <button class="btn-sm primary" onclick="qaTapByText()"><i class="ti ti-hand-finger"></i>누르기</button>
+          </div>
+        </div>
+        <div class="bridge-card qa-inspect">
+          <div class="ctrl-title">화면 요소
+            <button class="btn-sm" style="float:right;margin-top:-4px" id="qaInspectBtn" onclick="qaInspect()"
+              title="현재 화면의 요소 목록을 불러온다"><i class="ti ti-scan"></i>불러오기</button>
+          </div>
+          <div class="qa-meta" id="qaMeta">불러오기를 누르면 현재 화면의 글자·ID·좌표가 표시됩니다</div>
+          <input type="text" id="qaFilter" class="qa-input" placeholder="목록에서 찾기" spellcheck="false"
+            oninput="qaRenderElements()">
+          <div class="qa-list" id="qaList"></div>
+        </div>
       </div>
 
       <!-- 설정 -->

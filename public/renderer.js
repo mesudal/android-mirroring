@@ -2871,3 +2871,123 @@ async function patchAndInstallApk() {
     btn.disabled = false
   }
 }
+
+// ── QA 자동화 ──────────────────────────────────────────────────
+// 미러링 대상(state.serial)과 별개로 기기를 고른다 — QA 실행기는 여러 대를 동시에 쓴다.
+const qa = { elements: [], busy: false }
+
+function qaSerial() { return $('qaDevice')?.value || '' }
+
+// QA 탭을 열 때마다 기기 목록을 다시 읽는다 (그 사이 꽂거나 뺐을 수 있다)
+function qaOnShow() { qaRefreshDevices() }
+
+async function qaRefreshDevices() {
+  const sel = $('qaDevice')
+  if (!sel) return
+  const prev = sel.value || state.serial || ''
+  const devices = await window.db.getDevices()
+  sel.innerHTML = devices.length
+    ? devices.map(d => `<option value="${escapeHtml(d.serial)}">${escapeHtml(`${d.model} · ${d.serial}`)}</option>`).join('')
+    : '<option value="">연결된 기기가 없습니다</option>'
+  if (devices.some(d => d.serial === prev)) sel.value = prev
+}
+
+async function qaInspect() {
+  const serial = qaSerial()
+  if (!serial) { showToast('QA 대상 기기를 먼저 선택해 주세요', true); return }
+  if (qa.busy) return
+  qa.busy = true
+  setText('qaMeta', '화면 구조를 읽는 중… (1~3초)')
+  try {
+    const r = await window.db.qaInspect(serial)
+    if (!r.ok) {
+      qa.elements = []
+      setText('qaMeta', r.message)
+      showToast(r.message, true)
+    } else {
+      qa.elements = r.elements
+      const size = r.screen ? `${r.screen.width}×${r.screen.height}` : '?'
+      setText('qaMeta', `${r.pkg || '?'} · 요소 ${r.elements.length}개 (전체 노드 ${r.total}) · ${size}`)
+      // Flutter 등에서 접근성 정보가 비면 글자로는 조작할 수 없다 — 바로 알 수 있게 한다
+      if (r.total > 0 && !r.elements.some(e => e.label)) {
+        showToast('이 화면은 글자 정보가 없습니다. 좌표 방식으로만 조작할 수 있습니다', true)
+      }
+    }
+  } finally {
+    qa.busy = false
+    qaRenderElements()
+  }
+}
+
+function qaRenderElements() {
+  const list = $('qaList')
+  if (!list) return
+  const q = ($('qaFilter')?.value || '').trim().toLowerCase()
+  const rows = qa.elements
+    .map((e, i) => ({ e, i }))
+    .filter(({ e }) => !q || `${e.label}\n${e.id}\n${e.cls}`.toLowerCase().includes(q))
+  if (!rows.length) {
+    list.innerHTML = qa.elements.length ? '<div class="qa-empty">찾는 요소가 없습니다</div>' : ''
+    return
+  }
+  list.innerHTML = rows.map(({ e, i }) => {
+    const cls = e.cls.split('.').pop()
+    const id = e.id ? e.id.split('/').pop() : ''
+    const sub = [cls, id && `id=${id}`, `(${e.cx}, ${e.cy})`, e.clickable && '누름', e.checked && '선택됨']
+      .filter(Boolean).join(' · ')
+    const label = e.label ? escapeHtml(e.label.replace(/\n/g, ' ⏎ ')) : '(글자 없음)'
+    return `<div class="qa-el${e.enabled ? '' : ' disabled'}">
+      <div class="qa-el-main" onclick="qaCopySelector(${i})" title="${escapeHtml(e.label || '')}&#10;클릭하면 셀렉터를 복사합니다">
+        <div class="qa-el-label${e.label ? '' : ' empty'}">${label}</div>
+        <div class="qa-el-sub">${escapeHtml(sub)}</div>
+      </div>
+      <button class="btn-icon" onclick="qaTapElement(${i})" title="이 요소 누르기"><i class="ti ti-hand-finger"></i></button>
+    </div>`
+  }).join('')
+}
+
+// 시나리오에 그대로 붙여 넣을 셀렉터. ID 가 있으면 ID, 없으면 글자, 둘 다 없으면 비율 좌표.
+function qaSelectorOf(e) {
+  if (e.id) return { id: e.id.split('/').pop() }
+  if (e.label) return e.label.includes('\n') ? { textContains: e.label.split('\n')[0] } : { text: e.label }
+  return null
+}
+
+function qaCopySelector(i) {
+  const e = qa.elements[i]
+  if (!e) return
+  const sel = qaSelectorOf(e)
+  const text = sel ? JSON.stringify(sel) : `{ "xy": [${e.cx}, ${e.cy}] }  // 픽셀 좌표 — 비율로 바꿔 쓸 것`
+  navigator.clipboard.writeText(text)
+    .then(() => showToast('셀렉터 복사됨: ' + text))
+    .catch(() => showToast('복사하지 못했습니다', true))
+}
+
+async function qaTap(sel) {
+  const serial = qaSerial()
+  if (!serial) { showToast('QA 대상 기기를 먼저 선택해 주세요', true); return null }
+  return window.db.qaTap({ serial, sel })
+}
+
+// 목록의 요소를 누른다. 화면이 그 사이 바뀌었을 수 있어 좌표가 아니라 셀렉터로 다시 찾는다.
+async function qaTapElement(i) {
+  const e = qa.elements[i]
+  if (!e) return
+  const sel = qaSelectorOf(e)
+  if (!sel) { showToast('글자·ID 가 없는 요소는 여기서 누를 수 없습니다', true); return }
+  const r = await qaTap(sel)
+  if (!r) return
+  showToast(r.ok ? `눌렀습니다: ${r.label || ''} (${r.x}, ${r.y})` : r.message, !r.ok)
+  if (r.ok) setTimeout(qaInspect, 800)   // 화면 전환 후 목록 갱신
+}
+
+// 입력한 글자와 완전히 같은 요소를 먼저 찾고, 없으면 포함하는 요소를 누른다
+async function qaTapByText() {
+  const text = ($('qaTapText')?.value || '').trim()
+  if (!text) { showToast('누를 버튼의 글자를 입력해 주세요', true); return }
+  let r = await qaTap({ text })
+  if (!r) return
+  if (!r.ok && /나타나지 않음|요소 없음/.test(r.message)) r = await qaTap({ textContains: text })
+  showToast(r.ok ? `눌렀습니다: ${r.label || text} (${r.x}, ${r.y})` : r.message, !r.ok)
+  if (r.ok) setTimeout(qaInspect, 800)
+}

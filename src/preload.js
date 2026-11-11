@@ -86,6 +86,10 @@ contextBridge.exposeInMainWorld('db', {
     ipcRenderer.on('logcat:stopped', () => cb())
   },
 
+  // QA 자동화
+  qaInspect: (serial) => ipcRenderer.invoke('qa:inspect', serial),
+  qaTap: (opts) => ipcRenderer.invoke('qa:tap', opts),
+
   // 패킷 분석 프록시
   proxyStart: (port) => ipcRenderer.invoke('proxy:start', port),
   proxyStop: () => ipcRenderer.invoke('proxy:stop'),

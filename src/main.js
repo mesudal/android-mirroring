@@ -8,6 +8,7 @@ const MirrorBridge = require('./mirror-bridge')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
+const { createDriver } = require('./qa-driver')
 
 const isDev = process.argv.includes('--dev')
 let binDir = app.isPackaged
@@ -312,9 +313,10 @@ app.on('activate', () => { if (!mainWindow) createWindow() })
 ipcMain.handle('app:update-check', () => startUpdateCheck(true))
 
 // ── ADB 유틸 ──────────────────────────────────────────────────
-function runAdb(args) {
+// timeout 은 ms. 예전엔 두 번째 인자를 무시하고 15초로 고정돼 있었다.
+function runAdb(args, timeout = 15000) {
   return new Promise((resolve, reject) => {
-    execFile(adbPath, args, { timeout: 15000 }, (err, stdout, stderr) => {
+    execFile(adbPath, args, { timeout }, (err, stdout, stderr) => {
       if (err) reject(stderr || err.message)
       else resolve(stdout.trim())
     })
@@ -925,6 +927,57 @@ ipcMain.handle('logcat:save', async (_, text) => {
   } catch (e) {
     return { ok: false, message: String(e) }
   }
+})
+
+// ── QA 자동화 ──────────────────────────────────────────────────
+// 미러링 대상(state.serial)과 무관하게 기기를 지정해 제어한다. 드라이버는 기기별로
+// 하나만 만들어 재사용한다 — 드라이버가 그 기기의 adb 명령 큐를 들고 있기 때문이다.
+const qaDrivers = new Map()
+
+function getQaDriver(serial) {
+  let d = qaDrivers.get(serial)
+  if (!d) {
+    d = createDriver({ adb: () => adbPath, serial, log: logMirror })
+    qaDrivers.set(serial, d)
+  }
+  return d
+}
+
+// 렌더러로 넘길 요소 한 줄. 글자·ID 가 없고 누를 수도 없는 배치용 노드는 뺀다.
+function qaElement(n) {
+  return {
+    text: n.text, desc: n.desc, label: n.label, id: n.id, cls: n.cls,
+    clickable: n.clickable, enabled: n.enabled, checked: n.checked,
+    cx: n.cx, cy: n.cy, bounds: n.bounds,
+  }
+}
+
+// 지정 기기의 현재 화면 구조를 요소 목록으로 돌려준다 (시나리오 작성용)
+ipcMain.handle('qa:inspect', async (_, serial) => {
+  try {
+    if (!serial) return { ok: false, message: '기기를 선택해 주세요' }
+    const d = getQaDriver(serial)
+    const r = await d.dump()
+    if (!r.ok) return { ok: false, message: r.message }
+    const act = await d.currentActivity()
+    const elements = r.nodes
+      .filter(n => n.visible && (n.label || n.id || n.clickable))
+      .map(qaElement)
+    return {
+      ok: true, elements, total: r.nodes.length, screen: r.screen,
+      pkg: act.ok ? act.pkg : '', activity: act.ok ? act.activity : '',
+    }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
+})
+
+// 셀렉터로 요소를 찾아 누른다. sel 은 qa-xml 의 셀렉터 객체.
+ipcMain.handle('qa:tap', async (_, { serial, sel, timeout = 3000 } = {}) => {
+  try {
+    if (!serial) return { ok: false, message: '기기를 선택해 주세요' }
+    const r = await getQaDriver(serial).tap(sel, { timeout })
+    if (!r.ok) return { ok: false, message: r.message }
+    return { ok: true, message: r.message, x: r.x, y: r.y, label: r.node?.label || '' }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
 })
 
 // ── 세팅 체크 ──────────────────────────────────────────────────
