@@ -277,7 +277,6 @@ nav button, nav .conn-badge { -webkit-app-region:no-drag; }
 #page-mirror { overflow:visible; }
 #page-settings, #page-install, #page-files, #page-packet, #page-qa { overflow-y:auto; }
 #page-qa { gap:8px; }
-.qa-intro { color:var(--muted); font-size:11px; line-height:1.45; }
 .qa-role-list { display:flex; flex-direction:column; gap:7px; }
 .tool-body .qa-role-card, .tool-body .qa-inspect-card { padding:10px; margin:0; }
 .qa-role-card .ctrl-title, .qa-inspect-card .ctrl-title { margin-bottom:7px; }
@@ -824,3 +823,57 @@ input[type="range"]::-webkit-slider-thumb:hover {
   border-radius:var(--radius-sm); background:var(--surface2); }
 .qa-account-row span { flex:1; min-width:0; overflow-wrap:anywhere; }
 .qa-account-form .modal-input { margin-bottom:8px; padding:8px 12px; font-size:13px; }
+
+/* ── QA 탭 정리 (실행 · 준비 · 화면 도구) ─────────────────────────
+   좁은 패널이라 칸을 나누고, 카드 안 여백·선택 상자 간격을 줄인다. 아래 규칙이 위쪽 QA 규칙을 덮는다. */
+#page-qa { gap:8px; }
+#page-qa .qa-head select { width:100%; margin:0; font-weight:600; }
+.qa-seg { display:grid; grid-template-columns:repeat(3,1fr); gap:3px; padding:3px; border-radius:var(--radius-sm);
+  background:var(--surface2); border:1px solid var(--border); }
+.qa-seg-btn { display:flex; align-items:center; justify-content:center; gap:4px; padding:6px 4px; border:none; border-radius:6px;
+  background:transparent; color:var(--muted); font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
+.qa-seg-btn i { font-size:14px; }
+.qa-seg-btn:hover { color:var(--text); }
+.qa-seg-btn.active { background:var(--surface); color:var(--accent); box-shadow:0 0 0 1px var(--border2); }
+.qa-sec { display:flex; flex-direction:column; gap:8px; }
+.qa-sec[hidden] { display:none; }
+#page-qa .qa-card { padding:10px; margin:0; }
+#page-qa .qa-card .ctrl-title { margin-bottom:6px; }
+#page-qa .qa-card select { width:100%; min-width:0; margin-top:4px; }
+.qa-hint { font-size:10px; font-weight:400; color:var(--muted); text-transform:none; letter-spacing:0; margin-left:4px; }
+
+/* 준비 상태 요약 */
+.qa-ready { display:flex; flex-direction:column; gap:2px; }
+.qa-ready-row { display:flex; align-items:flex-start; gap:7px; width:100%; padding:5px 4px; border:none; border-radius:6px;
+  background:transparent; color:var(--text); text-align:left; cursor:pointer; }
+.qa-ready-row:hover { background:var(--accent-dim); }
+.qa-ready-row i { font-size:15px; margin-top:1px; flex:0 0 auto; }
+.qa-ready-row.ok i { color:var(--accent2); }
+.qa-ready-row.warn i { color:var(--amber); }
+.qa-ready-row.bad i { color:var(--red); }
+.qa-ready-row.info i { color:var(--muted); }
+.qa-ready-main { display:flex; flex-direction:column; min-width:0; }
+.qa-ready-main b { font-size:11px; font-weight:600; }
+.qa-ready-main span { font-size:10px; color:var(--muted); line-height:1.35; overflow-wrap:anywhere; }
+
+/* 접는 영역 */
+.qa-more { margin-top:6px; }
+.qa-more > summary { cursor:pointer; font-size:11px; color:var(--muted); padding:3px 0; list-style-position:inside; }
+.qa-more > summary:hover { color:var(--text); }
+.qa-more[open] > summary { margin-bottom:4px; }
+
+/* 역할 — 카드 안에 들어가므로 테두리 없이 위쪽 구분선만 */
+#page-qa .qa-role-list { gap:0; }
+#page-qa .qa-role-card { padding:0; margin:0; background:none; border:none; }
+#page-qa .qa-role-card + .qa-role-card, #page-qa .qa-role-more .qa-role-card { border-top:1px solid var(--border); padding-top:8px; margin-top:8px; }
+.qa-role-title { font-size:11px; font-weight:600; }
+.qa-role-more { border-top:1px solid var(--border); margin-top:8px; padding-top:4px; }
+
+/* 준비 칸의 APK 영역 — 앱 선택 창과 같은 카드를 쓰되 위 구분선은 뺀다 */
+.qa-prep-apk { display:flex; flex-direction:column; gap:6px; }
+.qa-prep-apk .qa-apk-title { display:none; }
+.qa-prep-apk .qa-apk-card { padding:8px 10px; }
+.qa-prep-apk .qa-apk-actions .btn-sm { padding:4px 8px; font-size:11px; }
+
+#page-qa .qa-run-card .qa-check { margin-top:8px; }
+#page-qa .qa-inspect-card select { margin-top:0; }

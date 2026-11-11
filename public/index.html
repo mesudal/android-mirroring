@@ -334,122 +334,160 @@
 
         <!-- QA 자동화 기반: 기기별 앱 선택과 현재 UI 접근성 요소 확인 -->
         <div class="page" id="page-qa">
-          <div class="qa-intro">
-            체크할 앱과 역할별 기기·앱 타입을 선택한 뒤 현재 화면의 접근성 요소를 확인합니다.
-            기기 화면 왼쪽 메뉴의 <i class="ti ti-apps"></i> 버튼으로도 앱 타입을 고를 수 있습니다.
-          </div>
-          <div class="ctrl-card qa-app-card">
-            <div class="ctrl-title">QA 대상 앱</div>
+          <!-- QA 탭은 좁은 패널이라 세 칸으로 나눈다: 실행(매번) · 준비(처음 한 번·가끔) · 화면 도구(시나리오 작성용) -->
+          <div class="qa-head">
             <select id="qaAppSelect" class="settings-input" aria-label="QA 대상 앱 선택" onchange="selectQaApp(this.value)"></select>
           </div>
-          <!-- 체크리스트 — 구글 시트 탭을 CSV 로 내려받아 가져온다. 시나리오는 체크리스트 ID 로 짝지어진다 -->
-          <div class="ctrl-card qa-checklist-card">
-            <div class="ctrl-title">체크리스트</div>
-            <div class="qa-auto-info" id="qaChecklistInfo">가져온 체크리스트가 없습니다</div>
-            <div class="qa-auto-info" id="qaScenarioInfo"></div>
-            <div class="qa-auto-actions">
-              <button class="btn-sm" onclick="importQaChecklist()" title="구글 시트 → 파일 → 다운로드 → CSV 로 받은 파일">
-                <i class="ti ti-file-import"></i>CSV 가져오기</button>
-              <button class="btn-sm" onclick="openQaChecklist()"><i class="ti ti-list-check"></i>항목 보기</button>
-              <button class="btn-sm" onclick="openQaScenarioFolder()" title="시나리오(JSON)를 추가하는 폴더 열기">
-                <i class="ti ti-folder"></i>시나리오 폴더</button>
+          <div class="qa-seg" role="tablist" aria-label="QA 화면">
+            <button type="button" class="qa-seg-btn active" data-qa-sec="run" role="tab" onclick="showQaSection('run')"><i class="ti ti-player-play"></i>실행</button>
+            <button type="button" class="qa-seg-btn" data-qa-sec="prep" role="tab" onclick="showQaSection('prep')"><i class="ti ti-adjustments"></i>준비</button>
+            <button type="button" class="qa-seg-btn" data-qa-sec="tools" role="tab" onclick="showQaSection('tools')"><i class="ti ti-scan"></i>화면 도구</button>
+          </div>
+
+          <!-- ── 실행 ── -->
+          <div class="qa-sec" id="qaSecRun">
+            <!-- 준비 상태 요약 — 빠진 것이 있으면 줄을 눌러 준비 칸으로 간다 -->
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">준비 상태</div>
+              <div class="qa-ready" id="qaReadyList"></div>
+            </div>
+            <div class="ctrl-card qa-card qa-run-card">
+              <div class="ctrl-title">자동 QA 실행</div>
+              <select id="qaRunScope" class="settings-input" aria-label="실행 범위" onchange="onQaRunOptionChange()">
+                <option value="default">지난 Fail·Blocked + 자동 항목 전체 (기본)</option>
+                <option value="failed">지난 Fail·Blocked 만 (수정 확인)</option>
+                <option value="all">전체 항목</option>
+                <option value="custom">직접 고른 항목</option>
+              </select>
+              <label class="qa-check"><input type="checkbox" id="qaRunUpdate" onchange="onQaRunOptionChange()">
+                업데이트 테스트로 실행 <span class="qa-hint">기존 버전 → 업데이트</span></label>
+              <details class="qa-more">
+                <summary>세부 옵션</summary>
+                <label class="qa-field-label" for="qaKeepPriority">지난 Pass 인 사람 판정 항목</label>
+                <select id="qaKeepPriority" class="settings-input" onchange="onQaRunOptionChange()">
+                  <option value="">빼기</option>
+                  <option value="5">중요도 5 는 포함</option>
+                  <option value="4">중요도 4 이상은 포함</option>
+                </select>
+                <label class="qa-check"><input type="checkbox" id="qaManualUnscripted" checked onchange="onQaRunOptionChange()">
+                  시나리오 없는 항목은 사람이 판정</label>
+              </details>
+              <div class="qa-auto-info" id="qaRunPreview">—</div>
+              <div class="qa-auto-actions">
+                <button class="btn-sm primary" id="qaRunBtn" onclick="startQaRun()"><i class="ti ti-player-play"></i>실행</button>
+                <button class="btn-sm" id="qaStopBtn" onclick="stopQaRun()" disabled><i class="ti ti-player-stop"></i>중단</button>
+                <button class="btn-sm" onclick="openQaResults()"><i class="ti ti-report-analytics"></i>결과</button>
+              </div>
+              <div class="qa-run-progress" id="qaRunProgress" hidden>
+                <div class="qa-run-bar"><div id="qaRunBar"></div></div>
+                <div class="qa-auto-info" id="qaRunNow"></div>
+              </div>
             </div>
           </div>
-          <div class="qa-role-list" id="qaRoleList">
-            <div class="ctrl-card qa-role-card" data-qa-role="A">
-              <div class="ctrl-title">역할 A · 시험 대상</div>
-              <select class="settings-input qa-device-select" aria-label="역할 A 기기 선택"></select>
-              <select class="settings-input qa-package-select" aria-label="역할 A 앱 선택" disabled>
-                <option value="">기기를 먼저 선택하세요</option>
-              </select>
-              <select class="settings-input qa-account-select" aria-label="역할 A 테스트 계정" onchange="saveQaRoleAccount('A', this.value)"></select>
+
+          <!-- ── 준비 ── -->
+          <div class="qa-sec" id="qaSecPrep" hidden>
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">1. 체크리스트</div>
+              <div class="qa-auto-info" id="qaChecklistInfo">가져온 체크리스트가 없습니다</div>
+              <div class="qa-auto-actions">
+                <button class="btn-sm" onclick="importQaChecklist()" title="구글 시트 → 파일 → 다운로드 → CSV 로 받은 파일">
+                  <i class="ti ti-file-import"></i>CSV 가져오기</button>
+                <button class="btn-sm" onclick="openQaChecklist()"><i class="ti ti-list-check"></i>항목 보기</button>
+              </div>
             </div>
-            <div class="ctrl-card qa-role-card" data-qa-role="B">
-              <div class="ctrl-title">역할 B · 상대 기기</div>
-              <select class="settings-input qa-device-select" aria-label="역할 B 기기 선택"></select>
-              <select class="settings-input qa-package-select" aria-label="역할 B 앱 선택" disabled>
-                <option value="">기기를 먼저 선택하세요</option>
-              </select>
-              <select class="settings-input qa-account-select" aria-label="역할 B 테스트 계정" onchange="saveQaRoleAccount('B', this.value)"></select>
+
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">2. 기기와 계정
+                <button class="link-btn" style="float:right" onclick="openQaAccounts()"><i class="ti ti-user-cog"></i>계정 관리</button>
+              </div>
+              <div class="qa-role-list" id="qaRoleList">
+                <div class="qa-role-card" data-qa-role="A">
+                  <div class="qa-role-title">A · 시험 대상</div>
+                  <select class="settings-input qa-device-select" aria-label="역할 A 기기 선택"></select>
+                  <select class="settings-input qa-package-select" aria-label="역할 A 앱 타입" disabled>
+                    <option value="">기기를 먼저 선택하세요</option>
+                  </select>
+                  <select class="settings-input qa-account-select" aria-label="역할 A 테스트 계정" onchange="saveQaRoleAccount('A', this.value)"></select>
+                </div>
+                <!-- 상대 기기는 여러 대가 필요한 항목(송수신·1:1 등)에서만 쓴다 — 평소엔 접어 둔다 -->
+                <details class="qa-more qa-role-more" id="qaRoleMore">
+                  <summary>상대 기기 B · C <span class="qa-hint" id="qaRoleMoreHint"></span></summary>
+                  <div class="qa-role-card" data-qa-role="B">
+                    <div class="qa-role-title">B · 상대 기기</div>
+                    <select class="settings-input qa-device-select" aria-label="역할 B 기기 선택"></select>
+                    <select class="settings-input qa-package-select" aria-label="역할 B 앱 타입" disabled>
+                      <option value="">기기를 먼저 선택하세요</option>
+                    </select>
+                    <select class="settings-input qa-account-select" aria-label="역할 B 테스트 계정" onchange="saveQaRoleAccount('B', this.value)"></select>
+                  </div>
+                  <div class="qa-role-card" data-qa-role="C">
+                    <div class="qa-role-title">C · 추가 상대 기기</div>
+                    <select class="settings-input qa-device-select" aria-label="역할 C 기기 선택"></select>
+                    <select class="settings-input qa-package-select" aria-label="역할 C 앱 타입" disabled>
+                      <option value="">기기를 먼저 선택하세요</option>
+                    </select>
+                    <select class="settings-input qa-account-select" aria-label="역할 C 테스트 계정" onchange="saveQaRoleAccount('C', this.value)"></select>
+                  </div>
+                </details>
+              </div>
             </div>
-            <div class="ctrl-card qa-role-card" data-qa-role="C">
-              <div class="ctrl-title">역할 C · 추가 상대 기기</div>
-              <select class="settings-input qa-device-select" aria-label="역할 C 기기 선택"></select>
-              <select class="settings-input qa-package-select" aria-label="역할 C 앱 선택" disabled>
-                <option value="">기기를 먼저 선택하세요</option>
-              </select>
-              <select class="settings-input qa-account-select" aria-label="역할 C 테스트 계정" onchange="saveQaRoleAccount('C', this.value)"></select>
+
+            <!-- 업데이트 테스트용 APK — 역할 A 의 앱 타입 기준. 기기 화면 왼쪽 메뉴의 앱 선택 창과 같은 내용이다 -->
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">3. 업데이트 테스트 APK <span class="qa-hint">필요할 때만</span></div>
+              <div class="qa-prep-apk" id="qaPrepApk"></div>
+            </div>
+
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">4. 시나리오</div>
+              <div class="qa-auto-info" id="qaScenarioInfo"></div>
+              <div class="qa-auto-actions">
+                <button class="btn-sm" onclick="openQaScenarioFolder()" title="시나리오(JSON)를 추가하는 폴더 열기">
+                  <i class="ti ti-folder"></i>시나리오 폴더</button>
+              </div>
             </div>
           </div>
-          <!-- 자동 QA 실행 — 범위 기본값: 지난 Fail·Blocked + 자동 시나리오 전체 (사람 손이 드는 Pass 항목만 뺀다) -->
-          <div class="ctrl-card qa-run-card">
-            <div class="ctrl-title">자동 QA 실행
-              <button class="link-btn" style="float:right" onclick="openQaAccounts()"><i class="ti ti-user-cog"></i>테스트 계정</button>
+
+          <!-- ── 화면 도구 — 시나리오를 쓸 때 셀렉터(글자·ID)를 찾는 용도 ── -->
+          <div class="qa-sec" id="qaSecTools" hidden>
+            <div class="ctrl-card qa-card qa-inspect-card">
+              <div class="qa-auto-info" style="margin:0 0 6px">시나리오를 쓸 때 버튼 글자·ID 를 찾는 도구입니다.</div>
+              <div class="qa-inspect-controls">
+                <select id="qaInspectRole" class="settings-input" aria-label="화면을 볼 역할">
+                  <option value="A">역할 A</option>
+                  <option value="B">역할 B</option>
+                  <option value="C">역할 C</option>
+                </select>
+                <button class="btn-sm primary" id="qaInspectButton" onclick="inspectQaScreen()">
+                  <i class="ti ti-scan"></i>현재 화면 조회
+                </button>
+              </div>
+              <!-- 글자로 누르기 — 화면을 다시 읽어 그 글자의 요소를 찾아 누른다 (시나리오의 tap 과 같은 경로) -->
+              <div class="qa-tap-text">
+                <input id="qaTapText" class="settings-input" placeholder="누를 버튼 글자 (예: 확인)" spellcheck="false"
+                  aria-label="누를 버튼 글자" onkeydown="if(event.key==='Enter')tapQaByText()">
+                <button class="btn-sm" id="qaTapTextButton" onclick="tapQaByText()">
+                  <i class="ti ti-hand-finger"></i>누르기
+                </button>
+              </div>
+              <div class="qa-status" id="qaStatus" role="status">기기와 앱을 선택해 주세요</div>
+              <input id="qaElementFilter" class="settings-input" placeholder="요소 글자·설명·ID 검색"
+                oninput="renderQaElements()">
+              <div class="qa-element-list" id="qaElementList">
+                <div class="qa-empty">현재 화면을 조회하면 요소 목록이 표시됩니다.</div>
+              </div>
+              <div class="qa-selected">
+                <span id="qaSelectedLabel">선택된 요소 없음</span>
+                <button class="btn-sm" id="qaTapButton" onclick="tapQaElement()" disabled>
+                  <i class="ti ti-hand-click"></i>선택 요소 탭
+                </button>
+              </div>
+              <details class="qa-xml-details">
+                <summary>화면 구조 XML 원문</summary>
+                <pre id="qaXmlSource"></pre>
+              </details>
             </div>
-            <label class="qa-field-label" for="qaRunScope">실행 범위</label>
-            <select id="qaRunScope" class="settings-input" onchange="onQaRunOptionChange()">
-              <option value="default">지난 Fail·Blocked + 자동 항목 전체 (기본)</option>
-              <option value="failed">지난 Fail·Blocked 만 (수정 확인)</option>
-              <option value="all">전체 항목</option>
-              <option value="custom">직접 고른 항목 (항목 보기에서 선택)</option>
-            </select>
-            <label class="qa-field-label" for="qaKeepPriority">지난 Pass 인 사람 판정 항목</label>
-            <select id="qaKeepPriority" class="settings-input" onchange="onQaRunOptionChange()">
-              <option value="">빼기</option>
-              <option value="5">중요도 5 는 포함</option>
-              <option value="4">중요도 4 이상은 포함</option>
-            </select>
-            <label class="qa-check"><input type="checkbox" id="qaManualUnscripted" checked onchange="onQaRunOptionChange()">
-              시나리오가 없는 항목은 체크리스트를 보여 주고 사람이 판정</label>
-            <label class="qa-check"><input type="checkbox" id="qaRunUpdate" onchange="onQaRunOptionChange()">
-              업데이트 테스트로 실행 (기존 버전 설치 → 업데이트 전 항목 → 업데이트 설치 → 나머지)</label>
-            <div class="qa-auto-info" id="qaRunPreview">—</div>
-            <div class="qa-auto-actions">
-              <button class="btn-sm primary" id="qaRunBtn" onclick="startQaRun()"><i class="ti ti-player-play"></i>실행</button>
-              <button class="btn-sm" id="qaStopBtn" onclick="stopQaRun()" disabled><i class="ti ti-player-stop"></i>중단</button>
-              <button class="btn-sm" onclick="openQaResults()"><i class="ti ti-report-analytics"></i>결과 보기</button>
-            </div>
-            <div class="qa-run-progress" id="qaRunProgress" hidden>
-              <div class="qa-run-bar"><div id="qaRunBar"></div></div>
-              <div class="qa-auto-info" id="qaRunNow"></div>
-            </div>
-          </div>
-          <div class="ctrl-card qa-inspect-card">
-            <div class="ctrl-title">화면 요소 확인</div>
-            <div class="qa-inspect-controls">
-              <select id="qaInspectRole" class="settings-input" aria-label="화면을 볼 역할">
-                <option value="A">역할 A</option>
-                <option value="B">역할 B</option>
-                <option value="C">역할 C</option>
-              </select>
-              <button class="btn-sm primary" id="qaInspectButton" onclick="inspectQaScreen()">
-                <i class="ti ti-scan"></i>현재 화면 조회
-              </button>
-            </div>
-            <!-- 글자로 누르기 — 화면을 다시 읽어 그 글자의 요소를 찾아 누른다 (시나리오의 tap 과 같은 경로) -->
-            <div class="qa-tap-text">
-              <input id="qaTapText" class="settings-input" placeholder="누를 버튼 글자 (예: 확인)" spellcheck="false"
-                aria-label="누를 버튼 글자" onkeydown="if(event.key==='Enter')tapQaByText()">
-              <button class="btn-sm" id="qaTapTextButton" onclick="tapQaByText()">
-                <i class="ti ti-hand-finger"></i>누르기
-              </button>
-            </div>
-            <div class="qa-status" id="qaStatus" role="status">기기와 앱을 선택해 주세요</div>
-            <input id="qaElementFilter" class="settings-input" placeholder="요소 글자·설명·ID 검색"
-              oninput="renderQaElements()">
-            <div class="qa-element-list" id="qaElementList">
-              <div class="qa-empty">현재 화면을 조회하면 요소 목록이 표시됩니다.</div>
-            </div>
-            <div class="qa-selected">
-              <span id="qaSelectedLabel">선택된 요소 없음</span>
-              <button class="btn-sm" id="qaTapButton" onclick="tapQaElement()" disabled>
-                <i class="ti ti-hand-click"></i>선택 요소 탭
-              </button>
-            </div>
-            <details class="qa-xml-details">
-              <summary>화면 구조 XML 원문</summary>
-              <pre id="qaXmlSource"></pre>
-            </details>
           </div>
         </div>
 
