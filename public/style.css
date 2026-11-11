@@ -274,7 +274,33 @@ nav button, nav .conn-badge { -webkit-app-region:no-drag; }
 /* overflow:hidden 이면 로그창의 음수 마진이 페이지 경계에서 잘려 패널 가장자리까지 못 간다.
    스크롤은 .tool-body 의 overflow:hidden 이 이미 막고 있으므로 여기선 열어 둔다. */
 #page-mirror { overflow:visible; }
-#page-settings, #page-install, #page-files, #page-packet { overflow-y:auto; }
+#page-settings, #page-install, #page-files, #page-packet, #page-qa { overflow-y:auto; }
+#page-qa { gap:8px; }
+.qa-intro { color:var(--muted); font-size:11px; line-height:1.45; }
+.qa-role-list { display:flex; flex-direction:column; gap:7px; }
+.tool-body .qa-role-card, .tool-body .qa-inspect-card { padding:10px; margin:0; }
+.qa-role-card .ctrl-title, .qa-inspect-card .ctrl-title { margin-bottom:7px; }
+.qa-role-card select, .qa-inspect-card select, #qaElementFilter { width:100%; min-width:0; margin-top:5px; }
+.qa-inspect-controls { display:grid; grid-template-columns:74px 1fr; gap:6px; align-items:center; }
+.qa-inspect-controls select, .qa-inspect-controls button { margin:0; min-width:0; }
+.qa-status { color:var(--muted); font-size:10px; line-height:1.4; margin:7px 0 2px; overflow-wrap:anywhere; }
+.qa-status.error { color:var(--red); }
+.qa-element-list { display:flex; flex-direction:column; gap:4px; max-height:250px; overflow:auto;
+  margin-top:7px; }
+.qa-element-row { width:100%; display:flex; flex-direction:column; gap:3px; padding:7px;
+  text-align:left; color:var(--text); background:var(--surface2); border:1px solid var(--border);
+  border-radius:var(--radius-sm); cursor:pointer; }
+.qa-element-row:hover, .qa-element-row.selected { border-color:var(--accent); background:var(--accent-dim); }
+.qa-element-title { font-size:11px; font-weight:600; overflow-wrap:anywhere; }
+.qa-element-meta { color:var(--muted); font:9px/1.35 ui-monospace,monospace; overflow-wrap:anywhere; }
+.qa-empty { padding:12px 6px; text-align:center; color:var(--muted); font-size:10px; }
+.qa-selected { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px;
+  color:var(--muted); font-size:10px; }
+.qa-selected span { min-width:0; overflow-wrap:anywhere; }
+.qa-xml-details { margin-top:8px; color:var(--muted); font-size:10px; }
+.qa-xml-details summary { cursor:pointer; }
+.qa-xml-details pre { max-height:180px; overflow:auto; margin-top:6px; color:var(--text);
+  font:9px/1.4 ui-monospace,monospace; white-space:pre-wrap; user-select:text; -webkit-user-select:text; }
 .tool-body .ctrl-card { flex:0 0 auto; }
 .bridge-card { flex:1 1 0 !important; min-height:100px; display:flex; flex-direction:column;
   background:transparent; border:none; padding:0; margin-bottom:0 !important; }

@@ -248,6 +248,7 @@
       </button>
       <div class="tool-tabs">
         <div class="tool-tab active" onclick="switchPage('mirror',this)"><i class="ti ti-device-mobile"></i>미러링</div>
+        <div class="tool-tab" onclick="switchPage('qa',this);loadQaSetup()"><i class="ti ti-checklist"></i>QA</div>
         <!-- APK 탭은 미러링 탭의 'APK 설치' 버튼으로 옮겼다.
              클립보드 탭은 양방향 자동 동기화로 대체할 예정이라 내렸다 (docs/TODO.md 참고). -->
         <!-- 패킷 탭 — 기능은 살아 있고 화면에만 노출하지 않는다 -->
@@ -325,6 +326,65 @@
             </div>
           </div>
           -->
+        </div>
+
+        <!-- QA 자동화 기반: 기기별 앱 선택과 현재 UI 접근성 요소 확인 -->
+        <div class="page" id="page-qa">
+          <div class="qa-intro">
+            체크할 기기와 제로톡 앱 변형을 선택한 뒤 현재 화면의 접근성 요소를 확인합니다.
+          </div>
+          <div class="qa-role-list" id="qaRoleList">
+            <div class="ctrl-card qa-role-card" data-qa-role="A">
+              <div class="ctrl-title">역할 A · 시험 대상</div>
+              <select class="settings-input qa-device-select" aria-label="역할 A 기기 선택"></select>
+              <select class="settings-input qa-package-select" aria-label="역할 A 앱 선택" disabled>
+                <option value="">기기를 먼저 선택하세요</option>
+              </select>
+            </div>
+            <div class="ctrl-card qa-role-card" data-qa-role="B">
+              <div class="ctrl-title">역할 B · 상대 기기</div>
+              <select class="settings-input qa-device-select" aria-label="역할 B 기기 선택"></select>
+              <select class="settings-input qa-package-select" aria-label="역할 B 앱 선택" disabled>
+                <option value="">기기를 먼저 선택하세요</option>
+              </select>
+            </div>
+            <div class="ctrl-card qa-role-card" data-qa-role="C">
+              <div class="ctrl-title">역할 C · 추가 상대 기기</div>
+              <select class="settings-input qa-device-select" aria-label="역할 C 기기 선택"></select>
+              <select class="settings-input qa-package-select" aria-label="역할 C 앱 선택" disabled>
+                <option value="">기기를 먼저 선택하세요</option>
+              </select>
+            </div>
+          </div>
+          <div class="ctrl-card qa-inspect-card">
+            <div class="ctrl-title">화면 요소 확인</div>
+            <div class="qa-inspect-controls">
+              <select id="qaInspectRole" class="settings-input" aria-label="화면을 볼 역할">
+                <option value="A">역할 A</option>
+                <option value="B">역할 B</option>
+                <option value="C">역할 C</option>
+              </select>
+              <button class="btn-sm primary" id="qaInspectButton" onclick="inspectQaScreen()">
+                <i class="ti ti-scan"></i>현재 화면 조회
+              </button>
+            </div>
+            <div class="qa-status" id="qaStatus" role="status">기기와 앱을 선택해 주세요</div>
+            <input id="qaElementFilter" class="settings-input" placeholder="요소 글자·설명·ID 검색"
+              oninput="renderQaElements()">
+            <div class="qa-element-list" id="qaElementList">
+              <div class="qa-empty">현재 화면을 조회하면 요소 목록이 표시됩니다.</div>
+            </div>
+            <div class="qa-selected">
+              <span id="qaSelectedLabel">선택된 요소 없음</span>
+              <button class="btn-sm" id="qaTapButton" onclick="tapQaElement()" disabled>
+                <i class="ti ti-hand-click"></i>선택 요소 탭
+              </button>
+            </div>
+            <details class="qa-xml-details">
+              <summary>화면 구조 XML 원문</summary>
+              <pre id="qaXmlSource"></pre>
+            </details>
+          </div>
         </div>
 
       <!-- 화면 캡처 -->

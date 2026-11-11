@@ -5,6 +5,7 @@ const { spawn, execFile, execSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
+const QaDriver = require('./qa-driver')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
@@ -319,14 +320,16 @@ ipcMain.handle('window:set-always-on-top', (_, enabled) => {
 })
 
 // ── ADB 유틸 ──────────────────────────────────────────────────
-function runAdb(args) {
+function runAdb(args, timeout = 15000) {
   return new Promise((resolve, reject) => {
-    execFile(adbPath, args, { timeout: 15000 }, (err, stdout, stderr) => {
+    execFile(adbPath, args, { timeout, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) reject(stderr || err.message)
       else resolve(stdout.trim())
     })
   })
 }
+
+const qaDriver = new QaDriver(runAdb)
 
 // ── IPC 핸들러들 ──────────────────────────────────────────────
 
@@ -347,6 +350,44 @@ ipcMain.handle('adb:devices', async () => {
         return { serial, model: model.replace(/_/g, ' '), product }
       })
   } catch { return [] }
+})
+
+ipcMain.handle('qa:packages', async (_, serial) => {
+  if (typeof serial !== 'string' || !serial.trim()) {
+    return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
+  }
+  try {
+    const output = await qaDriver.runForDevice(serial, () =>
+      runAdb(['-s', serial, 'shell', 'pm', 'list', 'packages', '-3']))
+    const packages = output.split(/\r?\n/)
+      .map(line => line.trim().replace(/^package:/, ''))
+      .filter(name => name && /^[\w.]+$/.test(name))
+      .sort((a, b) => a.localeCompare(b))
+    return { ok: true, packages }
+  } catch (error) {
+    return { ok: false, message: `설치된 앱 목록을 가져오지 못했습니다: ${String(error)}` }
+  }
+})
+
+ipcMain.handle('qa:inspect', async (_, serial) => {
+  try {
+    const result = await qaDriver.dumpUi(serial)
+    const appPackage = result.elements.find(element => element.packageName)?.packageName || ''
+    return { ok: true, appPackage, elements: result.elements, xml: result.xml }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+})
+
+ipcMain.handle('qa:tap', async (_, input) => {
+  try {
+    if (!input || typeof input !== 'object') throw new Error('탭 좌표를 지정해 주세요')
+    const { serial, x, y } = input
+    await qaDriver.tap(serial, x, y)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
 })
 
 // Wi-Fi 연결

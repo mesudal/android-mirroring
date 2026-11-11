@@ -249,6 +249,223 @@ function switchPage(id, el) {
   updateConnToggle()   // 하단 버튼은 지금 보고 있는 탭의 역할을 맡는다
 }
 
+// ── QA 기기·앱 선택과 화면 요소 확인 ────────────────────────────
+const QA_ROLES = ['A', 'B', 'C']
+const QA_PACKAGE_LABELS = {
+  'net.zerotalk.free': '무료용',
+  'net.zerotalk.user': '단체용 사용자',
+  'net.zerotalk.admin': '단체용 관리자',
+}
+let qaAssignments = loadQaAssignments()
+let qaDevices = []
+let qaElements = []
+let qaSelectedElement = null
+let qaInspectResult = null
+let qaLoadPromise = null
+
+function loadQaAssignments() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('db_qa_roles') || '{}')
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}
+  } catch { return {} }
+}
+
+function saveQaAssignments() {
+  try { localStorage.setItem('db_qa_roles', JSON.stringify(qaAssignments)) } catch (error) {
+    console.warn('QA 역할 설정을 저장하지 못했습니다:', error)
+  }
+}
+
+function qaRoleCard(role) {
+  return document.querySelector(`.qa-role-card[data-qa-role="${role}"]`)
+}
+
+function renderQaDeviceSelect(role) {
+  const select = qaRoleCard(role)?.querySelector('.qa-device-select')
+  if (!select) return
+  const assigned = qaAssignments[role] || {}
+  select.replaceChildren(new Option('기기 선택', ''))
+  for (const device of qaDevices) {
+    select.add(new Option(`${device.model} · ${device.serial}`, device.serial))
+  }
+  if (qaDevices.some(device => device.serial === assigned.serial)) select.value = assigned.serial
+  select.onchange = async () => {
+    qaAssignments[role] = { serial: select.value, pkg: '' }
+    saveQaAssignments()
+    await renderQaPackageSelect(role)
+  }
+}
+
+async function renderQaPackageSelect(role) {
+  const card = qaRoleCard(role)
+  const select = card?.querySelector('.qa-package-select')
+  const serial = card?.querySelector('.qa-device-select')?.value || ''
+  if (!select) return
+  select.disabled = true
+  select.replaceChildren(new Option(serial ? '설치된 앱 조회 중...' : '기기를 먼저 선택하세요', ''))
+  if (!serial) return
+
+  let result
+  try { result = await window.db.qaPackages(serial) } catch (error) {
+    if (card.querySelector('.qa-device-select').value !== serial) return
+    select.replaceChildren(new Option('앱 목록을 불러오지 못했습니다', ''))
+    return `역할 ${role}: ${error.message}`
+  }
+  if (card.querySelector('.qa-device-select').value !== serial) return
+  if (!result.ok) {
+    select.replaceChildren(new Option('앱 목록을 불러오지 못했습니다', ''))
+    return `역할 ${role}: ${result.message}`
+  }
+  const packages = result.packages.filter(name => name.startsWith('net.zerotalk.'))
+  select.replaceChildren(new Option(packages.length ? '앱 변형 선택' : '제로톡 앱이 없습니다', ''))
+  for (const name of packages) {
+    select.add(new Option(`${QA_PACKAGE_LABELS[name] || name} · ${name}`, name))
+  }
+  select.disabled = packages.length === 0
+  const assigned = qaAssignments[role] || {}
+  if (packages.includes(assigned.pkg)) select.value = assigned.pkg
+  select.onchange = () => {
+    qaAssignments[role] = { serial, pkg: select.value }
+    saveQaAssignments()
+  }
+  return null
+}
+
+async function loadQaSetup() {
+  if (qaLoadPromise) return qaLoadPromise
+  qaLoadPromise = (async () => {
+    setQaStatus('연결된 기기와 설치된 제로톡 앱을 확인하는 중...')
+    qaDevices = await window.db.getDevices()
+    for (const role of QA_ROLES) renderQaDeviceSelect(role)
+    const packageErrors = (await Promise.all(QA_ROLES.map(renderQaPackageSelect))).filter(Boolean)
+    if (!qaDevices.length) setQaStatus('연결된 Android 기기가 없습니다', true)
+    else if (packageErrors.length) setQaStatus(packageErrors.join(' / '), true)
+    else setQaStatus('역할별 기기와 앱을 선택한 뒤 현재 화면을 조회하세요')
+  })().catch(error => {
+    setQaStatus(`QA 기기 목록을 불러오지 못했습니다: ${error.message}`, true)
+  }).finally(() => { qaLoadPromise = null })
+  return qaLoadPromise
+}
+
+function setQaStatus(message, isError = false) {
+  const status = document.getElementById('qaStatus')
+  if (!status) return
+  status.textContent = message
+  status.classList.toggle('error', isError)
+}
+
+async function inspectQaScreen() {
+  const role = document.getElementById('qaInspectRole')?.value || 'A'
+  const card = qaRoleCard(role)
+  const serial = card?.querySelector('.qa-device-select')?.value || ''
+  const pkg = card?.querySelector('.qa-package-select')?.value || ''
+  if (!serial || !pkg) {
+    setQaStatus(`역할 ${role}의 기기와 앱 변형을 선택해 주세요`, true)
+    return
+  }
+
+  const button = document.getElementById('qaInspectButton')
+  if (button) button.disabled = true
+  setQaStatus(`역할 ${role}의 현재 화면을 읽는 중...`)
+  qaSelectedElement = null
+  const tapButton = document.getElementById('qaTapButton')
+  if (tapButton) tapButton.disabled = true
+  try {
+    const result = await window.db.qaInspect(serial)
+    if (!result.ok) throw new Error(result.message || '화면 조회에 실패했습니다')
+    qaInspectResult = { ...result, serial, role, pkg }
+    qaElements = result.elements
+    const xmlSource = document.getElementById('qaXmlSource')
+    if (xmlSource) xmlSource.textContent = result.xml
+    const packageWarning = result.appPackage && result.appPackage !== pkg
+      ? `선택한 ${pkg} 대신 현재 화면은 ${result.appPackage} 입니다. 선택한 앱을 기기에서 열고 다시 조회하세요.`
+      : `${qaElements.length}개 요소를 찾았습니다 · 역할 ${role} · ${pkg}`
+    setQaStatus(packageWarning, result.appPackage !== pkg)
+    renderQaElements()
+  } catch (error) {
+    qaInspectResult = null
+    qaElements = []
+    renderQaElements()
+    setQaStatus(`화면 조회 실패: ${error.message}`, true)
+  } finally {
+    if (button) button.disabled = false
+  }
+}
+
+function renderQaElements() {
+  const list = document.getElementById('qaElementList')
+  if (!list) return
+  list.replaceChildren()
+  const query = (document.getElementById('qaElementFilter')?.value || '').trim().toLocaleLowerCase()
+  const filtered = qaElements.filter(element =>
+    [element.text, element.desc, element.id, element.className]
+      .some(value => value.toLocaleLowerCase().includes(query)))
+  if (!filtered.length) {
+    const empty = document.createElement('div')
+    empty.className = 'qa-empty'
+    empty.textContent = qaElements.length ? '검색 결과가 없습니다' : '표시할 요소가 없습니다'
+    list.appendChild(empty)
+    return
+  }
+
+  for (const element of filtered) {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = 'qa-element-row'
+    row.classList.toggle('selected', qaSelectedElement?.index === element.index)
+    row.addEventListener('click', () => selectQaElement(element))
+
+    const title = document.createElement('span')
+    title.className = 'qa-element-title'
+    title.textContent = element.text || element.desc || element.id || element.className || '(이름 없는 요소)'
+    row.appendChild(title)
+
+    const meta = document.createElement('span')
+    meta.className = 'qa-element-meta'
+    meta.textContent = [
+      element.text && `글자: ${element.text}`,
+      element.desc && `설명: ${element.desc}`,
+      element.id && `ID: ${element.id}`,
+      element.center && `좌표: ${element.center.x}, ${element.center.y}`,
+      `활성: ${element.enabled ? '예' : '아니요'}`,
+    ].filter(Boolean).join(' · ')
+    row.appendChild(meta)
+    list.appendChild(row)
+  }
+}
+
+function selectQaElement(element) {
+  qaSelectedElement = element
+  const label = document.getElementById('qaSelectedLabel')
+  if (label) {
+    const name = element.text || element.desc || element.id || element.className || '이름 없는 요소'
+    label.textContent = `${name}${element.center ? ` · ${element.center.x}, ${element.center.y}` : ''}`
+  }
+  const button = document.getElementById('qaTapButton')
+  if (button) button.disabled = !element.center || !element.enabled || !qaInspectResult
+  renderQaElements()
+}
+
+async function tapQaElement() {
+  if (!qaSelectedElement?.center || !qaInspectResult) return
+  const { serial, role } = qaInspectResult
+  const { x, y } = qaSelectedElement.center
+  const button = document.getElementById('qaTapButton')
+  if (button) button.disabled = true
+  try {
+    const result = await window.db.qaTap({ serial, x, y })
+    if (!result.ok) {
+      setQaStatus(`요소 탭 실패: ${result.message}`, true)
+      return
+    }
+    setQaStatus(`역할 ${role} 화면의 (${x}, ${y}) 요소를 탭했습니다. 화면을 다시 조회해 결과를 확인하세요.`)
+  } catch (error) {
+    setQaStatus(`요소 탭 실패: ${error.message}`, true)
+  } finally {
+    if (button) button.disabled = !qaSelectedElement?.center || !qaSelectedElement.enabled
+  }
+}
+
 // ── 모달 ───────────────────────────────────────────────────────
 function openConnectModal() {
   $('connectOverlay').classList.add('open')
