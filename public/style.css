@@ -438,7 +438,6 @@ select { background:var(--surface2); border:1px solid var(--border); border-radi
 body { overflow:hidden; }
 .dual-topbar { height:54px; flex:0 0 54px; display:flex; align-items:center; gap:10px; padding:0 18px;
   background:var(--surface); border-bottom:1px solid var(--border); }
-.dual-topbar .logo small { color:var(--muted); font-size:11px; font-weight:400; margin-left:5px; }
 .dual-topbar .btn-sm:disabled { opacity:.45; cursor:not-allowed; }
 .dual-topbar .btn-sm.active { color:var(--accent); background:var(--accent-dim); border-color:var(--accent); }
 .dual-workspace { flex:1; min-height:0; display:grid; grid-template-rows:minmax(0,1fr) 8px var(--dual-log-height, 220px);
@@ -877,3 +876,25 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 #page-qa .qa-run-card .qa-check { margin-top:8px; }
 #page-qa .qa-inspect-card select { margin-top:0; }
+
+/* ── 왼쪽 바로가기: 아이콘 + 짧은 이름 ─────────────────────────────
+   아이콘만으로는 뜻을 알기 어려워 이름을 붙였다. 위 규칙(.device-side-tools button 34px)을 덮는다.
+   버튼 12개가 창 높이를 넘으면 메뉴 안에서 스크롤된다. */
+.device-panel-body { grid-template-columns:62px minmax(0,1fr); }
+.device-side-tools { gap:2px; padding:5px 4px; scrollbar-width:none; }
+.device-side-tools::-webkit-scrollbar { display:none; }
+.device-side-tools button { flex:0 0 auto; width:54px; height:auto; min-height:40px; padding:4px 2px 3px;
+  flex-direction:column; gap:2px; border-radius:8px; }
+.device-side-tools button i { font-size:17px; line-height:1; }
+.device-side-tools button span { font-size:10px; line-height:1.15; white-space:nowrap; letter-spacing:-0.3px; }
+.device-side-tools button:hover span, .device-side-tools button.active span { color:inherit; }
+.side-divider { width:40px; margin:4px 0; }
+.device-side-tools .side-record.on { color:var(--red); background:rgba(232,93,93,.1); border-color:var(--red); }
+.device-side-tools button[aria-pressed="true"] { color:var(--accent); }
+
+/* 기기가 연결되지 않은 화면은 바로가기를 흐리게 — 눌러도 '기기를 먼저 연결' 안내만 뜬다 */
+.device-panel.no-device .device-side-tools button { opacity:.45; }
+.device-panel.no-device .device-side-tools button:hover { opacity:.8; }
+
+/* 위쪽 막대: QA·설정 바로 가기와 기기 버튼 사이 구분 */
+.topbar-sep { width:1px; height:20px; background:var(--border2); margin:0 2px; }

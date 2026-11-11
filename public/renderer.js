@@ -135,6 +135,7 @@ function updateDevicePanels() {
     if (device.panel) device.panel.style.display = visible.includes(device) ? 'flex' : 'none'
     const disconnectButton = slotElement(device, 'slotDisconnectButton')
     if (disconnectButton) disconnectButton.hidden = !device.serial
+    device.panel?.classList.toggle('no-device', !device.serial)
   })
   const workspace = document.querySelector('.dual-workspace')
   if (workspace) workspace.style.setProperty('--device-count', visible.length)
@@ -2175,7 +2176,7 @@ function updateDeviceScreenButton(device) {
   button.classList.toggle('active', device.screenOff)
   button.setAttribute('aria-pressed', String(device.screenOff))
   button.title = device.screenOff ? '스마트폰 화면 켜기' : '스마트폰 화면 끄기'
-  button.innerHTML = `<i class="ti ${device.screenOff ? 'ti-device-mobile-off' : 'ti-device-mobile'}"></i>`
+  button.innerHTML = `<i class="ti ${device.screenOff ? 'ti-device-mobile-off' : 'ti-device-mobile'}"></i><span>${device.screenOff ? '화면 켜기' : '화면 끄기'}</span>`
 }
 
 function toggleDeviceScreen() {
@@ -3426,6 +3427,8 @@ function setRecordingUI(on, busy = false) {
     sideButton.classList.toggle('on', on)
     sideButton.disabled = busy
     sideButton.title = on ? '녹화 종료 및 저장' : '화면 녹화 시작'
+    const label = sideButton.querySelector('span')
+    if (label) label.textContent = on ? '중지' : '녹화'
   }
   const btn = $('recToggle')
   if (btn) {
@@ -3857,6 +3860,16 @@ function toggleToolPanel() {
 }
 
 let toolDrawerOrigin = null
+
+// 위쪽 막대의 [QA] [설정] — 도구 패널을 그 탭으로 연다. 이미 열려 있으면 탭만 바꾼다.
+function openToolPage(page) {
+  const col = document.querySelector('.tool-col')
+  if (!col) return
+  if (!col.classList.contains('visible')) toggleToolDrawer()
+  const tab = document.querySelector(`.tool-tab[onclick*="'${page}'"]`)
+  switchPage(page, tab)
+  if (page === 'qa') loadQaSetup()
+}
 
 function toggleToolDrawer() {
   const col = document.querySelector('.tool-col')

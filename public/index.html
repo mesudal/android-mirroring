@@ -12,8 +12,11 @@
 
 <body>
   <header class="dual-topbar">
-    <div class="logo"><span class="logo-dot"></span>DroidBridge <small>기기 분할 보기 · 최대 3대</small></div>
+    <div class="logo"><span class="logo-dot"></span>DroidBridge</div>
     <div class="nav-spacer"></div>
+    <button class="btn-sm" onclick="openToolPage('qa')" title="QA 자동 진행·체크리스트·결과"><i class="ti ti-checklist"></i>QA</button>
+    <button class="btn-sm" onclick="openToolPage('settings')" title="Jira·녹화·테마·업데이트 설정"><i class="ti ti-settings"></i>설정</button>
+    <span class="topbar-sep"></span>
     <button class="btn-sm" id="alwaysOnTopButton" onclick="toggleAlwaysOnTop()" aria-pressed="false"
       title="항상 위 고정"><i class="ti ti-pin"></i>항상 위</button>
     <button class="btn-sm" id="deviceAddButton" onclick="addDevicePanel()">
@@ -33,23 +36,25 @@
       </header>
       <div class="device-panel-body">
         <aside class="device-side-tools">
-          <button onclick="activateSlot('A');keyevent(4)" title="뒤로"><i class="ti ti-arrow-left"></i></button>
-          <button onclick="activateSlot('A');keyevent(3)" title="홈"><i class="ti ti-circle"></i></button>
-          <button onclick="activateSlot('A');keyevent(187)" title="최근 앱"><i class="ti ti-layout-grid"></i></button>
+          <!-- 조작 -->
+          <button onclick="activateSlot('A');keyevent(4)" title="뒤로 가기 (Android 뒤로 버튼)"><i class="ti ti-arrow-back-up"></i><span>뒤로</span></button>
+          <button onclick="activateSlot('A');keyevent(3)" title="홈 화면"><i class="ti ti-home"></i><span>홈</span></button>
+          <button onclick="activateSlot('A');keyevent(187)" title="최근 앱 목록"><i class="ti ti-stack-2"></i><span>최근 앱</span></button>
+          <button onclick="activateSlot('A');rotateView(-1)" title="미러링 화면을 왼쪽으로 돌려 보기 (기기는 그대로)"><i class="ti ti-rotate-2"></i><span>회전</span></button>
+          <button data-role="screenPowerButton" onclick="activateSlot('A');toggleDeviceScreen()" aria-pressed="false" title="스마트폰 화면 끄기 (미러링은 계속)"><i class="ti ti-device-mobile"></i><span>화면 끄기</span></button>
           <span class="side-divider"></span>
-          <button data-role="qaAppButton" onclick="activateSlot('A');openQaAppPicker()" title="QA 대상 앱 선택"><i class="ti ti-apps"></i></button>
-          <button onclick="activateSlot('A');openJiraModal()" title="Jira 티켓 발행"><i class="ti ti-ticket"></i></button>
-          <button onclick="activateSlot('A');appAction('clear')" title="데이터 삭제"><i class="ti ti-eraser"></i></button>
-          <button onclick="activateSlot('A');appAction('settings')" title="앱 정보"><i class="ti ti-info-circle"></i></button>
-          <button onclick="toggleToolDrawer()" title="프로그램 설정"><i class="ti ti-settings"></i></button>
+          <!-- 기록 -->
+          <button onclick="activateSlot('A');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i><span>캡처</span></button>
+          <button class="side-record" data-role="recordButton" onclick="activateSlot('A');toggleRecord()" title="화면 녹화 시작"><i class="ti ti-player-record"></i><span>녹화</span></button>
           <span class="side-divider"></span>
-          <button onclick="activateSlot('A');rotateView(-1)" title="좌로 회전"><i class="ti ti-rotate"></i></button>
-          <button data-role="screenPowerButton" onclick="activateSlot('A');toggleDeviceScreen()" title="스마트폰 화면 끄기" aria-pressed="false">
-            <i class="ti ti-device-mobile"></i>
-          </button>
-          <button onclick="activateSlot('A');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i></button>
-          <button class="side-record" data-role="recordButton" onclick="activateSlot('A');toggleRecord()" title="화면 녹화"><i class="ti ti-circle-filled"></i></button>
-          <button onclick="activateSlot('A');openApkPicker()" title="APK 설치"><i class="ti ti-package-import"></i></button>
+          <!-- 앱 -->
+          <button onclick="activateSlot('A');openApkPicker()" title="APK 파일 설치 (화면에 끌어다 놓아도 됩니다)"><i class="ti ti-package-import"></i><span>APK 설치</span></button>
+          <button onclick="activateSlot('A');appAction('settings')" title="지금 보이는 앱의 Android 앱 정보 화면 열기"><i class="ti ti-info-circle"></i><span>앱 정보</span></button>
+          <button onclick="activateSlot('A');appAction('clear')" title="지금 보이는 앱의 데이터 삭제 (처음 설치 상태로)"><i class="ti ti-trash-x"></i><span>데이터 삭제</span></button>
+          <span class="side-divider"></span>
+          <!-- QA -->
+          <button data-role="qaAppButton" onclick="activateSlot('A');openQaAppPicker()" title="QA 대상 앱·타입 선택, 업데이트 테스트 APK"><i class="ti ti-target"></i><span>QA 앱</span></button>
+          <button onclick="activateSlot('A');openJiraModal()" title="Jira 버그 티켓 발행 (화면·로그 첨부)"><i class="ti ti-bug"></i><span>버그 등록</span></button>
         </aside>
         <div class="device-view">
           <div class="phone-screen" data-role="phoneScreen" data-slot="A"
@@ -83,23 +88,25 @@
       </header>
       <div class="device-panel-body">
         <aside class="device-side-tools">
-          <button onclick="activateSlot('B');keyevent(4)" title="뒤로"><i class="ti ti-arrow-left"></i></button>
-          <button onclick="activateSlot('B');keyevent(3)" title="홈"><i class="ti ti-circle"></i></button>
-          <button onclick="activateSlot('B');keyevent(187)" title="최근 앱"><i class="ti ti-layout-grid"></i></button>
+          <!-- 조작 -->
+          <button onclick="activateSlot('B');keyevent(4)" title="뒤로 가기 (Android 뒤로 버튼)"><i class="ti ti-arrow-back-up"></i><span>뒤로</span></button>
+          <button onclick="activateSlot('B');keyevent(3)" title="홈 화면"><i class="ti ti-home"></i><span>홈</span></button>
+          <button onclick="activateSlot('B');keyevent(187)" title="최근 앱 목록"><i class="ti ti-stack-2"></i><span>최근 앱</span></button>
+          <button onclick="activateSlot('B');rotateView(-1)" title="미러링 화면을 왼쪽으로 돌려 보기 (기기는 그대로)"><i class="ti ti-rotate-2"></i><span>회전</span></button>
+          <button data-role="screenPowerButton" onclick="activateSlot('B');toggleDeviceScreen()" aria-pressed="false" title="스마트폰 화면 끄기 (미러링은 계속)"><i class="ti ti-device-mobile"></i><span>화면 끄기</span></button>
           <span class="side-divider"></span>
-          <button data-role="qaAppButton" onclick="activateSlot('B');openQaAppPicker()" title="QA 대상 앱 선택"><i class="ti ti-apps"></i></button>
-          <button onclick="activateSlot('B');openJiraModal()" title="Jira 티켓 발행"><i class="ti ti-ticket"></i></button>
-          <button onclick="activateSlot('B');appAction('clear')" title="데이터 삭제"><i class="ti ti-eraser"></i></button>
-          <button onclick="activateSlot('B');appAction('settings')" title="앱 정보"><i class="ti ti-info-circle"></i></button>
-          <button onclick="toggleToolDrawer()" title="프로그램 설정"><i class="ti ti-settings"></i></button>
+          <!-- 기록 -->
+          <button onclick="activateSlot('B');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i><span>캡처</span></button>
+          <button class="side-record" data-role="recordButton" onclick="activateSlot('B');toggleRecord()" title="화면 녹화 시작"><i class="ti ti-player-record"></i><span>녹화</span></button>
           <span class="side-divider"></span>
-          <button onclick="activateSlot('B');rotateView(-1)" title="좌로 회전"><i class="ti ti-rotate"></i></button>
-          <button data-role="screenPowerButton" onclick="activateSlot('B');toggleDeviceScreen()" title="스마트폰 화면 끄기" aria-pressed="false">
-            <i class="ti ti-device-mobile"></i>
-          </button>
-          <button onclick="activateSlot('B');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i></button>
-          <button class="side-record" data-role="recordButton" onclick="activateSlot('B');toggleRecord()" title="화면 녹화"><i class="ti ti-circle-filled"></i></button>
-          <button onclick="activateSlot('B');openApkPicker()" title="APK 설치"><i class="ti ti-package-import"></i></button>
+          <!-- 앱 -->
+          <button onclick="activateSlot('B');openApkPicker()" title="APK 파일 설치 (화면에 끌어다 놓아도 됩니다)"><i class="ti ti-package-import"></i><span>APK 설치</span></button>
+          <button onclick="activateSlot('B');appAction('settings')" title="지금 보이는 앱의 Android 앱 정보 화면 열기"><i class="ti ti-info-circle"></i><span>앱 정보</span></button>
+          <button onclick="activateSlot('B');appAction('clear')" title="지금 보이는 앱의 데이터 삭제 (처음 설치 상태로)"><i class="ti ti-trash-x"></i><span>데이터 삭제</span></button>
+          <span class="side-divider"></span>
+          <!-- QA -->
+          <button data-role="qaAppButton" onclick="activateSlot('B');openQaAppPicker()" title="QA 대상 앱·타입 선택, 업데이트 테스트 APK"><i class="ti ti-target"></i><span>QA 앱</span></button>
+          <button onclick="activateSlot('B');openJiraModal()" title="Jira 버그 티켓 발행 (화면·로그 첨부)"><i class="ti ti-bug"></i><span>버그 등록</span></button>
         </aside>
         <div class="device-view">
           <div class="phone-screen" data-role="phoneScreen" data-slot="B"
