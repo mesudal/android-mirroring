@@ -6,6 +6,7 @@ const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
 const { createDriver } = require('./qa-driver')
+const qaApps = require('./qa-apps')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
@@ -392,6 +393,29 @@ ipcMain.handle('qa:packages', async (_, serial) => {
     return { ok: true, packages }
   } catch (error) {
     return { ok: false, message: `설치된 앱 목록을 가져오지 못했습니다: ${String(error?.message || error)}` }
+  }
+})
+
+// QA 대상 앱 목록 (qa-apps.js). 렌더러는 모듈을 못 쓰므로 IPC 로 넘긴다.
+ipcMain.handle('qa:apps', () => ({ ok: true, apps: qaApps.QA_APPS }))
+
+// 지정 기기에 앱의 타입별 패키지가 깔려 있는지와 버전. 앱 선택 창·QA 탭이 쓴다.
+ipcMain.handle('qa:app-status', async (_, { serial, appId } = {}) => {
+  if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
+  const app = qaApps.findApp(appId)
+  if (!app) return { ok: false, message: `등록되지 않은 앱입니다: ${appId}` }
+  try {
+    const driver = getQaDriver(serial)
+    const variants = []
+    for (const v of app.variants) {
+      // --user 0 을 붙이면 패키지 인자가 무시되고 전체가 나온다 — 붙이지 않는다 (qa-apps.js 참고)
+      const r = await driver.shell(`dumpsys package ${v.pkg}`)
+      const ver = qaApps.parsePackageVersion(r.out, v.pkg)
+      variants.push({ id: v.id, name: v.name, pkg: v.pkg, installed: !!ver, ...(ver || {}) })
+    }
+    return { ok: true, appId: app.id, variants }
+  } catch (error) {
+    return { ok: false, message: String(error?.message || error) }
   }
 })
 

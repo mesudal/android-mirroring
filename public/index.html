@@ -24,6 +24,7 @@
     <section class="device-panel active" data-slot="A">
       <header class="device-panel-head">
         <strong>기기 A</strong><span class="device-model" data-role="slotModel">연결할 기기 선택</span>
+        <button class="qa-app-badge" data-role="qaAppBadge" onclick="activateSlot('A');openQaAppPicker()" title="QA 대상 앱 변경" hidden></button>
         <button class="btn-sm" onclick="activateSlot('A');openConnectModal()"><i class="ti ti-plug"></i>기기 선택</button>
         <button class="btn-sm slot-disconnect" data-role="slotDisconnectButton" onclick="activateSlot('A');disconnectDevice()" title="기기 연결 해제" hidden>
           <i class="ti ti-plug-off"></i>
@@ -36,6 +37,7 @@
           <button onclick="activateSlot('A');keyevent(3)" title="홈"><i class="ti ti-circle"></i></button>
           <button onclick="activateSlot('A');keyevent(187)" title="최근 앱"><i class="ti ti-layout-grid"></i></button>
           <span class="side-divider"></span>
+          <button data-role="qaAppButton" onclick="activateSlot('A');openQaAppPicker()" title="QA 대상 앱 선택"><i class="ti ti-apps"></i></button>
           <button onclick="activateSlot('A');openJiraModal()" title="Jira 티켓 발행"><i class="ti ti-ticket"></i></button>
           <button onclick="activateSlot('A');appAction('clear')" title="데이터 삭제"><i class="ti ti-eraser"></i></button>
           <button onclick="activateSlot('A');appAction('settings')" title="앱 정보"><i class="ti ti-info-circle"></i></button>
@@ -72,6 +74,7 @@
     <section class="device-panel" data-slot="B">
       <header class="device-panel-head">
         <strong>기기 B</strong><span class="device-model" data-role="slotModel">연결할 기기 선택</span>
+        <button class="qa-app-badge" data-role="qaAppBadge" onclick="activateSlot('B');openQaAppPicker()" title="QA 대상 앱 변경" hidden></button>
         <button class="btn-sm" onclick="activateSlot('B');openConnectModal()"><i class="ti ti-plug"></i>기기 선택</button>
         <button class="btn-sm slot-disconnect" data-role="slotDisconnectButton" onclick="activateSlot('B');disconnectDevice()" title="기기 연결 해제" hidden>
           <i class="ti ti-plug-off"></i>
@@ -84,6 +87,7 @@
           <button onclick="activateSlot('B');keyevent(3)" title="홈"><i class="ti ti-circle"></i></button>
           <button onclick="activateSlot('B');keyevent(187)" title="최근 앱"><i class="ti ti-layout-grid"></i></button>
           <span class="side-divider"></span>
+          <button data-role="qaAppButton" onclick="activateSlot('B');openQaAppPicker()" title="QA 대상 앱 선택"><i class="ti ti-apps"></i></button>
           <button onclick="activateSlot('B');openJiraModal()" title="Jira 티켓 발행"><i class="ti ti-ticket"></i></button>
           <button onclick="activateSlot('B');appAction('clear')" title="데이터 삭제"><i class="ti ti-eraser"></i></button>
           <button onclick="activateSlot('B');appAction('settings')" title="앱 정보"><i class="ti ti-info-circle"></i></button>
@@ -331,7 +335,12 @@
         <!-- QA 자동화 기반: 기기별 앱 선택과 현재 UI 접근성 요소 확인 -->
         <div class="page" id="page-qa">
           <div class="qa-intro">
-            체크할 기기와 제로톡 앱 변형을 선택한 뒤 현재 화면의 접근성 요소를 확인합니다.
+            체크할 앱과 역할별 기기·앱 타입을 선택한 뒤 현재 화면의 접근성 요소를 확인합니다.
+            기기 화면 왼쪽 메뉴의 <i class="ti ti-apps"></i> 버튼으로도 앱 타입을 고를 수 있습니다.
+          </div>
+          <div class="ctrl-card qa-app-card">
+            <div class="ctrl-title">QA 대상 앱</div>
+            <select id="qaAppSelect" class="settings-input" aria-label="QA 대상 앱 선택" onchange="selectQaApp(this.value)"></select>
           </div>
           <div class="qa-role-list" id="qaRoleList">
             <div class="ctrl-card qa-role-card" data-qa-role="A">
@@ -833,6 +842,21 @@
         <button class="btn-primary" style="flex:1;justify-content:center" onclick="confirmApkInstall()">예</button>
         <button class="btn-sm" style="flex:1;justify-content:center" onclick="cancelApkInstall()">아니오</button>
       </div>
+    </div>
+  </div>
+
+  <!-- QA 대상 앱 선택 — 기기 화면 왼쪽 메뉴에서 연다. 앱은 공통, 타입(무료용 등)은 기기마다 고른다 -->
+  <div class="overlay" id="qaAppOverlay" onclick="if(event.target===this) closeQaAppPicker()">
+    <div class="modal" style="width:440px;max-width:92vw">
+      <h2>QA 대상 앱</h2>
+      <p id="qaAppPickerDevice">—</p>
+      <div class="qa-app-options" id="qaAppOptions" role="radiogroup" aria-label="앱"></div>
+      <div class="qa-variant-list" id="qaVariantList"></div>
+      <div class="qa-picker-actions">
+        <button class="btn-sm" onclick="clearQaVariantFromPicker()"><i class="ti ti-x"></i>선택 해제</button>
+        <button class="btn-sm" onclick="openQaTabFromPicker()"><i class="ti ti-checklist"></i>QA 탭 열기</button>
+      </div>
+      <button class="btn-outline" style="margin-top:8px" onclick="closeQaAppPicker()">닫기</button>
     </div>
   </div>
 

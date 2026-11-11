@@ -1,12 +1,12 @@
 {
   "name": "droidbridge",
-  "version": "1.2.13",
+  "version": "1.2.14",
   "description": "Android control center powered by scrcpy",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check public/renderer.js && node src/jira.js && node src/hid-keyboard.js && node src/mirror-bridge.js && node src/qa-xml.js && node src/qa-driver.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check public/renderer.js && node src/jira.js && node src/hid-keyboard.js && node src/mirror-bridge.js && node src/qa-xml.js && node src/qa-driver.js && node src/qa-apps.js",
     "build:win": "electron-builder --win --publish never",
     "build:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never",
     "build:linux": "electron-builder --linux --publish never",
