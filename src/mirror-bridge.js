@@ -72,6 +72,7 @@ class MirrorBridge {
     this.srvProc = null
     this.serial = null
     this.running = false
+    this.screenOff = false
     this._metaJson = null   // 캐싱: 늦게 연결된 WS 클라이언트에게 전송
     this._frameCnt = 0
     this.keyboardMode = 'clipboard'   // 'uhid' | 'clipboard' — start() 에서 판정
@@ -131,6 +132,8 @@ class MirrorBridge {
             const msg = JSON.parse(data)
             if (msg.type === 'touch') {
               this.injectTouch(msg)
+            } else if (msg.type === 'scroll') {
+              this.injectScroll(msg)
             } else if (msg.type === 'keycode') {
               this.injectKeycode(msg)
             } else if (msg.type === 'text') {
@@ -141,6 +144,8 @@ class MirrorBridge {
               this.uhidInput(hid.buildReport(msg.codes || []))
             } else if (msg.type === 'rotate') {
               this.rotateDevice()
+            } else if (msg.type === 'screenPower') {
+              this.setScreenPower(msg.on)
             } else if (msg.type === 'openKeyboardSettings') {
               this.openHardKeyboardSettings()
             }
@@ -509,10 +514,12 @@ class MirrorBridge {
 
     sock.on('error', e => {
       this.log(`소켓 오류 (수신 누적 ${totalReceived}B): ${e.message}`)
+      if (this.screenOff) this.setScreenPower(true)
       this._wsSend(JSON.stringify({ type: 'stopped', error: e.message }))
     })
     sock.on('close', () => {
       this.log(`소켓 종료 — 총 수신: ${totalReceived}B / 파싱 상태: ${state} / 서버 생존: ${this.srvProc != null && !this.srvProc.killed}`)
+      if (this.screenOff) this.setScreenPower(true)
       if (this.running) this._wsSend(JSON.stringify({ type: 'stopped' }))
     })
   }
@@ -550,6 +557,28 @@ class MirrorBridge {
       this.controlSock.write(buf)
     } catch (e) {
       this.log('터치 이벤트 전송 실패: ' + e.message)
+    }
+  }
+
+  injectScroll({ x, y, screenWidth, screenHeight, hScroll, vScroll }) {
+    if (!this.controlSock || this.controlSock.destroyed) return
+
+    const encodeScroll = value =>
+      Math.max(-32768, Math.min(32767, Math.round(Math.max(-16, Math.min(16, value)) * 32768 / 16)))
+    const buf = Buffer.alloc(21)
+    buf.writeUInt8(3, 0) // TYPE_INJECT_SCROLL_EVENT
+    buf.writeInt32BE(x, 1)
+    buf.writeInt32BE(y, 5)
+    buf.writeUInt16BE(screenWidth, 9)
+    buf.writeUInt16BE(screenHeight, 11)
+    buf.writeInt16BE(encodeScroll(hScroll), 13)
+    buf.writeInt16BE(encodeScroll(vScroll), 15)
+    buf.writeInt32BE(0, 17) // buttons
+
+    try {
+      this.controlSock.write(buf)
+    } catch (e) {
+      this.log('스크롤 이벤트 전송 실패: ' + e.message)
     }
   }
 
@@ -710,6 +739,19 @@ class MirrorBridge {
     }
   }
 
+  setScreenPower(on) {
+    if (!this.controlSock || this.controlSock.destroyed || typeof on !== 'boolean') return false
+    try {
+      this.controlSock.write(Buffer.from([10, on ? 1 : 0])) // TYPE_SET_DISPLAY_POWER
+      this.screenOff = !on
+      this.log(on ? '기기 화면 켜기 요청' : '기기 화면 끄기 요청')
+      return true
+    } catch (e) {
+      this.log('기기 화면 전원 요청 실패: ' + e.message)
+      return false
+    }
+  }
+
   // 단말의 물리 키보드 레이아웃 설정 화면을 연다. UHID 최초 사용 시 1회 필요하다.
   openHardKeyboardSettings() {
     if (!this.controlSock || this.controlSock.destroyed) return
@@ -741,6 +783,11 @@ class MirrorBridge {
   // ── 중지 ─────────────────────────────────────────────────────
   async stop() {
     this.running = false
+    if (this.screenOff && this.controlSock && !this.controlSock.destroyed) {
+      this.setScreenPower(true)
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    this.screenOff = false
     if (this.keyboardMode === 'uhid') this.uhidDestroy()   // 소켓 닫기 전에 보내야 한다
     this.keyboardMode = 'clipboard'
     // 캐시를 비우지 않으면 다음 세션에서 이전 해상도/모드가 먼저 전송된다
@@ -821,6 +868,30 @@ if (require.main === module) {
   assert.strictEqual(sentClipboard.readUInt8(9), 0, '자동 동기화에서 붙여넣기가 실행됐다')
   assert.strictEqual(sentClipboard.readUInt32BE(10), Buffer.byteLength('PC 클립보드'))
   assert.strictEqual(sentClipboard.toString('utf8', 14), 'PC 클립보드')
+  let sentScreenPower
+  bridge.controlSock.write = data => { sentScreenPower = Buffer.from(data) }
+  assert.strictEqual(bridge.setScreenPower(false), true)
+  assert.deepStrictEqual([...sentScreenPower], [10, 0], '화면 끄기 제어 패킷이 잘못됐다')
+  assert.strictEqual(bridge.screenOff, true)
+  assert.strictEqual(bridge.setScreenPower(true), true)
+  assert.deepStrictEqual([...sentScreenPower], [10, 1], '화면 켜기 제어 패킷이 잘못됐다')
+  assert.strictEqual(bridge.screenOff, false)
+  let sentScroll
+  bridge.controlSock.write = data => { sentScroll = Buffer.from(data) }
+  bridge.injectScroll({
+    x: 260, y: 1026, screenWidth: 1080, screenHeight: 1920,
+    hScroll: 16, vScroll: -16,
+  })
+  assert.strictEqual(sentScroll.length, 21, '스크롤 제어 패킷 길이가 잘못됐다')
+  assert.strictEqual(sentScroll.readUInt8(0), 3, '스크롤 제어 패킷 유형이 잘못됐다')
+  assert.strictEqual(sentScroll.readInt32BE(1), 260)
+  assert.strictEqual(sentScroll.readInt32BE(5), 1026)
+  assert.strictEqual(sentScroll.readUInt16BE(9), 1080)
+  assert.strictEqual(sentScroll.readUInt16BE(11), 1920)
+  assert.strictEqual(sentScroll.readInt16BE(13), 32767)
+  assert.strictEqual(sentScroll.readInt16BE(15), -32768)
+  assert.strictEqual(sentScroll.readInt32BE(17), 0)
+  bridge.controlSock.write = data => { sentClipboard = Buffer.from(data) }
   const echo = Buffer.from(deviceClipboard)
   echo.writeBigUInt64BE(1n, 1)
   bridge._handleDeviceMessages(echo)
@@ -829,5 +900,5 @@ if (require.main === module) {
   assert.strictEqual(sentClipboard.readBigUInt64BE(1), 2n)
   assert.strictEqual(sentClipboard.readUInt8(9), 1, '키보드 폴백에서 붙여넣기가 실행되지 않았다')
 
-  console.log('mirror-bridge 자가진단 통과 — session_meta·클립보드 프로토콜')
+  console.log('mirror-bridge 자가진단 통과 — session_meta·클립보드·화면 전원·스크롤 프로토콜')
 }

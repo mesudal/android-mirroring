@@ -1,13 +1,34 @@
 const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, nativeImage } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const path = require('path')
-const { spawn, execFile, execSync } = require('child_process')
+const { spawn, execFile, execSync, execFileSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
+const { createDriver } = require('./qa-driver')
+const qaApps = require('./qa-apps')
+const apkInfo = require('./apk-info')
+const qaChecklist = require('./qa-checklist')
+const qaScenario = require('./qa-scenario')
+const qaResults = require('./qa-results')
+const qaRunner = require('./qa-runner')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
+const { ensureUnelevated } = require('./win-elevation')
+
+const WINDOW_PREFERENCES = path.join(app.getPath('userData'), 'window-preferences.json')
+const MIN_WINDOW_WIDTH = 720
+const MIN_WINDOW_HEIGHT = 320
+
+function isAlwaysOnTopPreferenceEnabled() {
+  try {
+    const preferences = JSON.parse(fs.readFileSync(WINDOW_PREFERENCES, 'utf8'))
+    return preferences.alwaysOnTop === true
+  } catch {
+    return false
+  }
+}
 
 const isDev = process.argv.includes('--dev')
 let binDir = app.isPackaged
@@ -69,16 +90,16 @@ function resolveBin(name) {
 let adbPath = resolveBin(adbBin)
 
 let mainWindow = null
-let mirror = null   // MirrorBridge 인스턴스
-let recordingProcess = null
-let recordingStopping = false
+const mirrors = new Map()   // 기기 serial 별 MirrorBridge
+const recordingProcesses = new Map()
+const recordingStopping = new Set()
 let clipboardPollTimer = null
 let lastDesktopClipboard = null
 let proxyServer = null
 let certManager = null
 let updateCheckInProgress = false
-let updatePromptOpen = false
 let manualUpdateCheck = false
+let latestUpdateStatus = null
 
 // 미러링 로그를 파일로도 남긴다. 사용자가 "안 된다"고 할 때 이 파일 하나면 원인이
 // 잡힌다. 앱 시작마다 비우므로 한 세션치를 넘어 자라지 않는다.
@@ -86,12 +107,13 @@ const MIRROR_LOG = path.join(app.getPath('userData'), 'mirror.log')
 try { fs.writeFileSync(MIRROR_LOG, '') } catch { }
 
 // 미러링 로그 채널. 화면 패널과 로그 파일 양쪽으로 보낸다.
-function logMirror(msg) {
-  mainWindow?.webContents.send('mirror:log', msg)
+function logMirror(msg, serial = null) {
+  mainWindow?.webContents.send('mirror:log', msg, serial)
   try { fs.appendFileSync(MIRROR_LOG, `${new Date().toISOString()} ${msg}\n`) } catch { }
 }
 
 function sendUpdateStatus(status) {
+  latestUpdateStatus = status
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.webContents.send('app:update-status', status)
 }
@@ -127,32 +149,8 @@ function setupAutoUpdater() {
   })
   autoUpdater.on('update-available', async info => {
     logMirror(`[업데이트] 새 버전 발견: ${info.version}`)
-    if (updatePromptOpen) return
-    updatePromptOpen = true
     manualUpdateCheck = false
-    try {
-      const { response } = await dialog.showMessageBox(mainWindow, {
-        type: 'info',
-        title: '업데이트 확인',
-        message: `새 버전 ${info.version}을(를) 사용할 수 있습니다.`,
-        detail: '지금 다운로드하고 설치할까요?',
-        buttons: ['다운로드', '나중에'],
-        defaultId: 0,
-        cancelId: 1,
-      })
-      if (response !== 0) {
-        sendUpdateStatus({ state: 'available', version: info.version })
-        return
-      }
-      sendUpdateStatus({ state: 'downloading', percent: 0 })
-      logMirror(`[업데이트] ${info.version} 다운로드 시작`)
-      await autoUpdater.downloadUpdate()
-    } catch (error) {
-      logMirror(`[업데이트] 다운로드 실패: ${error.message}`)
-      sendUpdateStatus({ state: 'error', message: error.message, manual: true })
-    } finally {
-      updatePromptOpen = false
-    }
+    sendUpdateStatus({ state: 'available', version: info.version })
   })
   autoUpdater.on('download-progress', progress => {
     sendUpdateStatus({ state: 'downloading', percent: Math.floor(progress.percent) })
@@ -160,20 +158,6 @@ function setupAutoUpdater() {
   autoUpdater.on('update-downloaded', async info => {
     logMirror(`[업데이트] ${info.version} 다운로드 완료`)
     sendUpdateStatus({ state: 'downloaded', version: info.version })
-    try {
-      const { response } = await dialog.showMessageBox(mainWindow, {
-        type: 'info',
-        title: '업데이트 준비 완료',
-        message: `${info.version} 업데이트를 설치할 준비가 됐습니다.`,
-        detail: '지금 다시 시작하거나, 앱을 종료할 때 설치할 수 있습니다.',
-        buttons: ['지금 다시 시작', '종료할 때 설치'],
-        defaultId: 0,
-        cancelId: 1,
-      })
-      if (response === 0) autoUpdater.quitAndInstall()
-    } catch (error) {
-      logMirror(`[업데이트] 설치 안내 창을 열지 못했습니다: ${error.message}`)
-    }
   })
   autoUpdater.on('error', error => {
     logMirror(`[업데이트] 오류: ${error.message}`)
@@ -182,16 +166,17 @@ function setupAutoUpdater() {
   })
 }
 
-function getMirror() {
-  if (!mirror) {
-    mirror = new MirrorBridge({
+function getMirror(serial) {
+  if (!serial) throw new Error('미러링할 기기를 지정해야 합니다')
+  if (!mirrors.has(serial)) {
+    mirrors.set(serial, new MirrorBridge({
       adbPath,
       binDir,
-      onLog: logMirror,
+      onLog: msg => logMirror(msg, serial),
       onClipboard: syncDeviceClipboard,
-    })
+    }))
   }
-  return mirror
+  return mirrors.get(serial)
 }
 
 function stopDesktopClipboardSync() {
@@ -211,7 +196,7 @@ function startDesktopClipboardSync() {
       logMirror('[클립보드] 1MB를 넘는 텍스트는 동기화하지 않습니다')
       return
     }
-    mirror?.setClipboard(text)
+    mirrors.forEach(bridge => bridge.setClipboard(text))
   }, 500)
 }
 
@@ -229,33 +214,26 @@ function syncDeviceClipboard(text) {
 }
 
 // ── 윈도우 생성 ────────────────────────────────────────────────
-// 실행 크기이자 최소 크기. 화면이 작으면 작업 영역에 맞춰 줄인다 — 안 그러면 최소 크기가
-// 화면보다 커져 창을 아예 못 쓴다.
+// 시작 크기만 화면 작업 영역에 맞춘다. 최소 크기는 별도로 작게 유지해 사용자가 창을 줄일 수 있다.
 function pickLaunchSize() {
   try {
     const { screen } = require('electron')
     const avail = screen.getPrimaryDisplay().workAreaSize
     return {
-      width: Math.min(1600, Math.max(1100, avail.width - 60)),
-      height: Math.min(900, Math.max(600, avail.height - 60)),
+      width: Math.min(1600, Math.max(1, avail.width - 60)),
+      height: Math.min(900, Math.max(1, avail.height - 60)),
     }
   } catch {
     return { width: 1600, height: 900 }
   }
 }
 
-// 처음 뜬 창 너비 = 최소 너비의 하한. 렌더러가 레이아웃을 재서 더 큰 값을 요구할 수는
-// 있어도(디바이스가 넓으면) 이보다 좁게는 못 내려간다.
-let launchWidth = 0
-
 function createWindow() {
   const launch = pickLaunchSize()
-  launchWidth = launch.width
   mainWindow = new BrowserWindow({
-    // 처음 뜬 크기를 그대로 최소 크기로 삼는다 — 가로·세로 모두 더 줄일 수 없다.
-    // (가로 최소치는 레이아웃이 더 넓게 요구하면 window:set-min-size 로 올라가기만 한다)
     width: launch.width, height: launch.height,
-    minWidth: launch.width, minHeight: launch.height,
+    minWidth: Math.min(MIN_WINDOW_WIDTH, launch.width),
+    minHeight: Math.min(MIN_WINDOW_HEIGHT, launch.height),
     title: `안드로이드 미러링 v${app.getVersion()}`,
     autoHideMenuBar: true,   // Alt 를 눌러도 메뉴바가 나타나지 않게
     backgroundColor: '#0e0e10',
@@ -267,6 +245,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   })
+  mainWindow.setAlwaysOnTop(isAlwaysOnTopPreferenceEnabled())
   // 렌더러 예외는 DevTools 에만 남아 조용히 사라진다(핸들러가 통째로 죽어도 UI 는
   // 멀쩡해 보인다). 경고 이상을 로그 파일로 끌어내 원인 추적이 가능하게 한다.
   mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
@@ -281,6 +260,9 @@ function createWindow() {
     event.preventDefault()
     mainWindow?.setTitle(`안드로이드 미러링 v${app.getVersion()}`)
   })
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (latestUpdateStatus) sendUpdateStatus(latestUpdateStatus)
+  })
 
   // 상단 메뉴바(File/Edit/View/…)를 화면에서만 감춘다. 메뉴 자체는 살아 있어서
   // Ctrl+R(새로고침) 같은 기본 단축키는 그대로 동작한다.
@@ -290,7 +272,8 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, '..', 'public', 'index.html'))
   if (isDev) mainWindow.webContents.openDevTools()
   mainWindow.on('closed', () => {
-    mirror?.destroy()
+    mirrors.forEach(bridge => bridge.destroy())
+    mirrors.clear()
     stopLogcat()   // 창이 닫혀도 adb logcat 이 남아 돌지 않게
     stopDesktopClipboardSync()
     mainWindow = null
@@ -298,29 +281,98 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // 관리자 권한으로 떴으면(모든 사용자용 설치 + 업데이트 뒤 자동 재실행) 일반 권한으로 다시 띄운다.
+  // 관리자 권한 창에는 Windows 가 탐색기의 파일 드롭을 막아 APK 끌어 놓기 설치가 안 된다. (src/win-elevation.js)
+  if (platform === 'win32' && app.isPackaged && !process.argv.includes('--allow-elevated')) {
+    const r = ensureUnelevated({
+      execFileSync, spawn, fs, path, execPath: process.execPath, log: logMirror,
+      markerFile: path.join(app.getPath('userData'), 'unelevate.json'),
+    })
+    if (r === 'relaunched') { app.quit(); return }
+  }
   setupAutoUpdater()
   createWindow()
   if (app.isPackaged && platform === 'win32' && !isDev) {
-    mainWindow.webContents.once('did-finish-load', () => {
-      setTimeout(() => { startUpdateCheck(false) }, 2000)
-    })
+    startUpdateCheck(false)
   }
 })
 app.on('window-all-closed', () => { if (platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (!mainWindow) createWindow() })
-
 ipcMain.handle('app:update-check', () => startUpdateCheck(true))
+ipcMain.handle('app:update-download', async () => {
+  if (!app.isPackaged || platform !== 'win32' || isDev) {
+    return { ok: false, reason: 'unavailable' }
+  }
+  try {
+    sendUpdateStatus({ state: 'downloading', percent: 0 })
+    await autoUpdater.downloadUpdate()
+    return { ok: true }
+  } catch (error) {
+    logMirror(`[업데이트] 다운로드 실패: ${error.message}`)
+    sendUpdateStatus({ state: 'error', source: 'download', message: error.message, manual: true })
+    return { ok: false, message: error.message }
+  }
+})
+ipcMain.handle('app:update-install', () => {
+  if (!app.isPackaged || platform !== 'win32' || isDev) {
+    return { ok: false, reason: 'unavailable' }
+  }
+  autoUpdater.quitAndInstall(true, true)
+  return { ok: true }
+})
+
+ipcMain.handle('window:get-always-on-top', () => !!mainWindow?.isAlwaysOnTop())
+ipcMain.handle('window:set-always-on-top', (_, enabled) => {
+  if (!mainWindow || typeof enabled !== 'boolean') {
+    return { ok: false, message: '창 고정 설정을 변경할 수 없습니다.' }
+  }
+  try {
+    fs.writeFileSync(WINDOW_PREFERENCES, JSON.stringify({ alwaysOnTop: enabled }), 'utf8')
+    mainWindow.setAlwaysOnTop(enabled)
+    return { ok: true, enabled }
+  } catch (error) {
+    return { ok: false, message: `창 고정 설정을 저장하지 못했습니다: ${error.message}` }
+  }
+})
 
 // ── ADB 유틸 ──────────────────────────────────────────────────
-function runAdb(args) {
+function runAdb(args, timeout = 15000) {
   return new Promise((resolve, reject) => {
-    execFile(adbPath, args, { timeout: 15000 }, (err, stdout, stderr) => {
+    execFile(adbPath, args, { timeout, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) reject(stderr || err.message)
       else resolve(stdout.trim())
     })
   })
 }
 
+// ── QA 자동화 ──────────────────────────────────────────────────
+// 미러링 대상과 무관하게 기기를 지정해 제어한다. 드라이버는 기기별로 하나만 만들어
+// 재사용한다 — 드라이버가 그 기기의 adb 명령 큐를 들고 있기 때문이다.
+const qaDrivers = new Map()
+
+function getQaDriver(serial) {
+  let driver = qaDrivers.get(serial)
+  if (!driver) {
+    driver = createDriver({ adb: () => adbPath, serial })
+    qaDrivers.set(serial, driver)
+  }
+  return driver
+}
+
+const qaSerialOk = serial => typeof serial === 'string' && serial.trim() !== ''
+
+// 렌더러(QA 탭)가 쓰는 요소 모양. 넓이가 없는 노드는 누를 수 없으므로 center 를 비운다.
+function qaElement(node, index) {
+  const b = node.bounds
+  return {
+    index,
+    text: node.text, desc: node.desc, id: node.id, className: node.cls,
+    bounds: `[${b.x1},${b.y1}][${b.x2},${b.y2}]`,
+    center: node.visible ? { x: node.cx, y: node.cy } : null,
+    enabled: node.enabled, checked: node.checked, clickable: node.clickable,
+    packageName: node.pkg,
+  }
+}
 // ── IPC 핸들러들 ──────────────────────────────────────────────
 
 // 기기 목록
@@ -342,6 +394,313 @@ ipcMain.handle('adb:devices', async () => {
   } catch { return [] }
 })
 
+ipcMain.handle('qa:packages', async (_, serial) => {
+  if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
+  try {
+    // --user 0: 보안 폴더 등 다른 사용자 프로필이 있는 기기는 사용자 지정 없이 조회하면
+    // "Shell does not have permission to access user 150" 으로 실패한다 (SM-G986N 에서 실측).
+    const r = await getQaDriver(serial).shell('pm list packages -3 --user 0')
+    if (!r.ok) return { ok: false, message: `설치된 앱 목록을 가져오지 못했습니다: ${r.message}` }
+    const packages = r.out.split(/\r?\n/)
+      .map(line => line.trim().replace(/^package:/, ''))
+      .filter(name => name && /^[\w.]+$/.test(name))
+      .sort((a, b) => a.localeCompare(b))
+    return { ok: true, packages }
+  } catch (error) {
+    return { ok: false, message: `설치된 앱 목록을 가져오지 못했습니다: ${String(error?.message || error)}` }
+  }
+})
+
+// QA 대상 앱 목록 (qa-apps.js). 렌더러는 모듈을 못 쓰므로 IPC 로 넘긴다.
+ipcMain.handle('qa:apps', () => ({ ok: true, apps: qaApps.QA_APPS }))
+
+// 지정 기기에 앱의 타입별 패키지가 깔려 있는지와 버전. 앱 선택 창·QA 탭이 쓴다.
+ipcMain.handle('qa:app-status', async (_, { serial, appId } = {}) => {
+  if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
+  const app = qaApps.findApp(appId)
+  if (!app) return { ok: false, message: `등록되지 않은 앱입니다: ${appId}` }
+  try {
+    const driver = getQaDriver(serial)
+    const variants = []
+    for (const v of app.variants) {
+      // --user 0 을 붙이면 패키지 인자가 무시되고 전체가 나온다 — 붙이지 않는다 (qa-apps.js 참고)
+      const r = await driver.shell(`dumpsys package ${v.pkg}`)
+      const ver = qaApps.parsePackageVersion(r.out, v.pkg)
+      variants.push({ id: v.id, name: v.name, pkg: v.pkg, installed: !!ver, ...(ver || {}) })
+    }
+    return { ok: true, appId: app.id, variants }
+  } catch (error) {
+    return { ok: false, message: String(error?.message || error) }
+  }
+})
+
+// ── 업데이트 테스트용 APK ───────────────────────────────────────
+// 앱 타입마다 dev APK 두 개를 등록한다: 기존 버전(base) · 업데이트 버전(update).
+// 흐름: ① 기존 버전 설치(깔린 앱은 지우고 새로 — 깨끗한 출발점) → 이전 버전에서 확인할 것 확인
+//       → ② 업데이트 설치(adb install -r, 데이터 유지) → 누락·동작 이상 확인.
+// 파일은 복사하지 않고 경로만 기억한다 — 같은 경로에 새로 빌드하면 크기·수정 시각이 바뀐 것을 보고 다시 읽는다.
+//   userData/qa-apks.json = { [appId]: { [variantId]: { base?: entry, update?: entry } } }
+//   entry = { path, size, mtimeMs, info, registeredAt }
+// 이전 형식({ [variantId]: entry } — 업데이트 APK 하나만 있던 것)은 update 로 읽는다.
+const QA_APKS = path.join(app.getPath('userData'), 'qa-apks.json')
+const QA_APK_KINDS = { base: '기존 버전', update: '업데이트' }
+
+function loadQaApks() {
+  try {
+    const data = JSON.parse(fs.readFileSync(QA_APKS, 'utf8'))
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return {}
+    for (const variants of Object.values(data)) {
+      for (const [id, v] of Object.entries(variants || {})) {
+        if (v && v.path) variants[id] = { update: v }   // 이전 형식
+      }
+    }
+    return data
+  } catch { return {} }
+}
+
+function saveQaApks(data) {
+  fs.writeFileSync(QA_APKS, JSON.stringify(data, null, 2))
+}
+
+// 등록 항목을 읽고, 파일이 바뀌었으면 다시 분석해 저장한다. 등록이 없으면 null.
+function qaApkEntry(appId, variantId, kind) {
+  const all = loadQaApks()
+  const entry = all[appId]?.[variantId]?.[kind]
+  if (!entry?.path) return null
+  let stat
+  try { stat = fs.statSync(entry.path) } catch {
+    return { ...entry, missing: true }
+  }
+  if (stat.size !== entry.size || stat.mtimeMs !== entry.mtimeMs) {
+    entry.info = apkInfo.inspectApk(entry.path)
+    entry.size = stat.size
+    entry.mtimeMs = stat.mtimeMs
+    try { saveQaApks(all) } catch { }
+  }
+  return { ...entry, missing: false }
+}
+
+// 렌더러로 보낼 모양 (서명 인증서 지문은 길어서 앞부분만)
+function qaApkView(entry) {
+  if (!entry) return { registered: false }
+  const i = entry.info || {}
+  return {
+    registered: true,
+    path: entry.path,
+    fileName: path.basename(entry.path),
+    missing: !!entry.missing,
+    ok: !!i.ok && !entry.missing,
+    message: entry.missing ? `APK 파일이 없습니다: ${entry.path}` : (i.ok ? '' : (i.message || '')),
+    package: i.package || '',
+    versionCode: i.versionCode ?? null,
+    versionName: i.versionName || '',
+    minSdk: i.minSdk ?? null,
+    size: entry.size,
+    signer: i.signer ? { scheme: i.signer.scheme, hash: i.signer.hash, sha256: i.signer.sha256.slice(0, 16) } : null,
+  }
+}
+
+function qaVariantOrError(appId, variantId) {
+  const variant = qaApps.findVariant(appId, variantId)
+  return variant ? { variant } : { error: { ok: false, message: `등록되지 않은 앱 타입입니다: ${appId}/${variantId}` } }
+}
+
+function qaKindOrError(kind) {
+  return QA_APK_KINDS[kind] ? null : { ok: false, message: `APK 종류가 올바르지 않습니다: ${kind}` }
+}
+
+// 기기에 설치된 버전·서명과 Android SDK
+async function qaInstalledInfo(serial, pkg) {
+  const driver = getQaDriver(serial)
+  const r = await driver.shell(`dumpsys package ${pkg}`)
+  const ver = qaApps.parsePackageVersion(r.out, pkg)
+  const sdk = await driver.sdk()
+  return {
+    installed: ver ? { ...ver, signer: apkInfo.parseDeviceSigner(r.out, pkg) } : null,
+    device: { sdk },
+  }
+}
+
+// 이 기기에 설치할 수 있는지. 기존 버전은 "지우고 새로", 업데이트는 "덮어 설치(데이터 유지)" 기준으로 본다.
+function qaInstallCheck(kind, entry, installed, device, pkg) {
+  if (!entry) return null
+  if (entry.missing) return { level: 'error', canInstall: false, message: `APK 파일이 없습니다: ${entry.path}` }
+  const args = { apk: entry.info, installed, device, expectPkg: pkg }
+  return kind === 'base' ? apkInfo.checkBaseInstall(args) : apkInfo.checkUpdate(args)
+}
+
+// APK 등록. filePath 가 없으면 파일 선택 창을 연다. 다른 패키지의 APK 는 받지 않는다.
+ipcMain.handle('qa:apk-register', async (_, { appId, variantId, kind, filePath } = {}) => {
+  try {
+    const { variant, error } = qaVariantOrError(appId, variantId)
+    if (error) return error
+    const kindError = qaKindOrError(kind)
+    if (kindError) return kindError
+    let file = filePath
+    if (!file) {
+      const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        title: `${variant.name} ${QA_APK_KINDS[kind]} APK 선택`,
+        filters: [{ name: 'APK', extensions: ['apk'] }],
+        properties: ['openFile'],
+      })
+      if (canceled || !filePaths?.length) return { ok: false, canceled: true }
+      file = filePaths[0]
+    }
+    if (typeof file !== 'string' || !/\.apk$/i.test(file)) return { ok: false, message: '.apk 파일만 등록할 수 있습니다' }
+    const info = apkInfo.inspectApk(file)
+    if (!info.ok) return { ok: false, message: info.message }
+    if (info.package !== variant.pkg) {
+      return { ok: false, message: `다른 앱의 APK 입니다 — APK ${info.package}, ${variant.name} 은 ${variant.pkg}` }
+    }
+    const stat = fs.statSync(file)
+    const all = loadQaApks()
+    all[appId] = all[appId] || {}
+    all[appId][variantId] = all[appId][variantId] || {}
+    const entry = { path: file, size: stat.size, mtimeMs: stat.mtimeMs, info, registeredAt: new Date().toISOString() }
+    all[appId][variantId][kind] = entry
+    saveQaApks(all)
+    logMirror(`[QA] ${variant.name} ${QA_APK_KINDS[kind]} APK 등록: ${path.basename(file)} v${info.versionName} (${info.versionCode})`)
+    return { ok: true, apk: qaApkView({ ...entry, missing: false }) }
+  } catch (e) {
+    return { ok: false, message: String(e?.message || e) }
+  }
+})
+
+ipcMain.handle('qa:apk-unregister', async (_, { appId, variantId, kind } = {}) => {
+  try {
+    const kindError = qaKindOrError(kind)
+    if (kindError) return kindError
+    const all = loadQaApks()
+    if (all[appId]?.[variantId]?.[kind]) {
+      delete all[appId][variantId][kind]
+      saveQaApks(all)
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, message: String(e?.message || e) }
+  }
+})
+
+// 등록된 두 APK 의 정보와 짝 검사, serial 이 있으면 그 기기의 설치 상태와 각각의 설치 판정
+ipcMain.handle('qa:apk-status', async (_, { serial, appId, variantId } = {}) => {
+  try {
+    const { variant, error } = qaVariantOrError(appId, variantId)
+    if (error) return error
+    const base = qaApkEntry(appId, variantId, 'base')
+    const update = qaApkEntry(appId, variantId, 'update')
+    const okInfo = e => (e && !e.missing ? e.info : null)
+    const out = {
+      ok: true,
+      base: qaApkView(base),
+      update: qaApkView(update),
+      pair: apkInfo.checkPair(okInfo(base), okInfo(update)),
+    }
+    if (!qaSerialOk(serial) || (!base && !update)) return out
+    const { installed, device } = await qaInstalledInfo(serial, variant.pkg)
+    out.installed = installed
+    out.checks = {
+      base: qaInstallCheck('base', base, installed, device, variant.pkg),
+      update: qaInstallCheck('update', update, installed, device, variant.pkg),
+    }
+    return out
+  } catch (e) {
+    return { ok: false, message: String(e?.message || e) }
+  }
+})
+
+// 등록된 APK 를 기기에 설치한다. 설치 직전에 판정을 다시 해서 안 되는 경우는 거부한다.
+//   update : adb install -r (데이터 유지) — 실제 사용자의 업데이트와 같다
+//   base   : 판정(checkBaseInstall)의 action 대로. 데이터는 지울 수밖에 없을 때만 지운다
+//            install → adb install / upgrade → adb install -r (데이터 유지)
+//            reinstall(더 높은 버전·다른 서명) → adb uninstall(데이터 초기화) 후 adb install
+async function qaInstallApk({ serial, appId, variantId, kind } = {}) {
+  try {
+    if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
+    const { variant, error } = qaVariantOrError(appId, variantId)
+    if (error) return error
+    const kindError = qaKindOrError(kind)
+    if (kindError) return kindError
+    const label = `${variant.name} ${QA_APK_KINDS[kind]}`
+    const entry = qaApkEntry(appId, variantId, kind)
+    if (!entry) return { ok: false, message: `등록된 ${QA_APK_KINDS[kind]} APK 가 없습니다` }
+    const before = await qaInstalledInfo(serial, variant.pkg)
+    const check = qaInstallCheck(kind, entry, before.installed, before.device, variant.pkg)
+    // 기존 버전이 이미 같은 버전으로 깔려 있으면 할 일이 없다 — 실패가 아니라 '건너뜀'이다
+    if (kind === 'base' && check.action === 'none') return { ok: true, skipped: true, message: check.message }
+    if (!check.canInstall) return { ok: false, message: check.message }
+
+    const driver = getQaDriver(serial)
+    const failReason = r => {
+      const out = `${r.out || ''}\n${r.message || ''}`.trim()
+      return (/Failure \[([^\]]+)\]/.exec(out) || [])[1] || out.split('\n').pop() || '알 수 없는 오류'
+    }
+    const uninstallFirst = kind === 'base' && check.action === 'reinstall'
+    if (uninstallFirst) {
+      logMirror(`[QA] ${serial} ${variant.name} 삭제 — ${check.message}`)
+      const u = await driver.exec(['uninstall', variant.pkg], { timeout: 2 * 60 * 1000 })
+      if (!u.ok || !/Success/.test(`${u.out}${u.message}`)) {
+        logMirror(`[QA] ${variant.name} 삭제 실패: ${failReason(u)}`)
+        return { ok: false, message: `기존 앱 삭제 실패: ${failReason(u)}` }
+      }
+    }
+    logMirror(`[QA] ${serial} ${label} 설치 시작: ${path.basename(entry.path)}`)
+    const keepData = kind === 'update' || check.action === 'upgrade'
+    const args = keepData ? ['install', '-r', entry.path] : ['install', entry.path]
+    const r = await driver.exec(args, { timeout: 5 * 60 * 1000 })
+    if (!r.ok || !/Success/.test(`${r.out || ''}${r.message || ''}`)) {
+      logMirror(`[QA] ${label} 설치 실패: ${failReason(r)}`)
+      // 기존 버전은 이미 앱을 지웠을 수 있다 — 그 사실도 같이 알린다
+      const removed = uninstallFirst ? ' (설치돼 있던 앱은 이미 삭제됐습니다)' : ''
+      return { ok: false, message: `설치 실패: ${failReason(r)}${removed}` }
+    }
+    const after = await qaInstalledInfo(serial, variant.pkg)
+    const ver = i => (i ? `v${i.versionName} (${i.versionCode})` : '미설치')
+    logMirror(`[QA] ${label} 설치 완료: ${ver(before.installed)} → ${ver(after.installed)}`)
+    return { ok: true, message: `${label} 설치 완료: ${ver(before.installed)} → ${ver(after.installed)}`, before: before.installed, after: after.installed }
+  } catch (e) {
+    return { ok: false, message: String(e?.message || e) }
+  }
+}
+
+// 버튼(앱 선택 창)과 QA 실행기(업데이트 테스트) 둘 다 이 함수로 설치한다
+ipcMain.handle('qa:apk-install', (_, opts) => qaInstallApk(opts))
+
+// 지정 기기의 현재 화면 구조를 요소 목록으로 돌려준다
+ipcMain.handle('qa:inspect', async (_, serial) => {
+  if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
+  try {
+    const r = await getQaDriver(serial).dump()
+    if (!r.ok) return { ok: false, message: r.message }
+    if (!r.nodes.length) return { ok: false, message: '화면 구조 XML에서 요소를 찾지 못했습니다' }
+    const elements = r.nodes.map(qaElement)
+    const appPackage = elements.find(element => element.packageName)?.packageName || ''
+    return { ok: true, appPackage, elements, xml: r.xml }
+  } catch (error) {
+    return { ok: false, message: String(error?.message || error) }
+  }
+})
+
+// 좌표({ x, y }) 또는 셀렉터({ sel })로 누른다. 셀렉터는 qa-xml 의 셀렉터 객체다.
+ipcMain.handle('qa:tap', async (_, input) => {
+  try {
+    if (!input || typeof input !== 'object') return { ok: false, message: '탭할 위치를 지정해 주세요' }
+    const { serial, x, y, sel, timeout = 3000 } = input
+    if (!qaSerialOk(serial)) return { ok: false, message: 'QA 기기를 먼저 선택해 주세요' }
+    const driver = getQaDriver(serial)
+    if (sel !== undefined) {
+      const r = await driver.tap(sel, { timeout })
+      if (!r.ok) return { ok: false, message: r.message }
+      return { ok: true, x: r.x, y: r.y, label: r.node?.label || '' }
+    }
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0) {
+      return { ok: false, message: '탭 좌표가 올바르지 않습니다' }
+    }
+    const r = await driver.tapAt(x, y)
+    return r.ok ? { ok: true, x, y } : { ok: false, message: r.message }
+  } catch (error) {
+    return { ok: false, message: String(error?.message || error) }
+  }
+})
 // Wi-Fi 연결
 ipcMain.handle('adb:connect', async (_, ip, port = 5555) => {
   try {
@@ -361,28 +720,30 @@ ipcMain.handle('adb:disconnect', async (_, target) => {
 ipcMain.handle('mirror:start', async (_, { serial, maxSize, videoBitrate, fps }) => {
   try {
     adbPath = resolveBin(adbBin) // 재탐색 (setup 이후 변경 대응)
-    await getMirror().start({ serial, maxSize, videoBitrate, fps })
-    startDesktopClipboardSync()
+    await getMirror(serial).start({ serial, maxSize, videoBitrate, fps })
+    if (!clipboardPollTimer) startDesktopClipboardSync()
     return { ok: true }
   } catch (e) {
     return { ok: false, message: e.message }
   }
 })
 
-ipcMain.handle('mirror:stop', async () => {
-  stopDesktopClipboardSync()
-  await mirror?.stop()
+ipcMain.handle('mirror:stop', async (_, serial) => {
+  const bridge = mirrors.get(serial)
+  await bridge?.stop()
+  if (bridge) mirrors.delete(serial)
+  if (![...mirrors.values()].some(item => item.running)) stopDesktopClipboardSync()
   return { ok: true }
 })
 
-ipcMain.handle('mirror:init', async () => {
-  return await getMirror().startWss()
+ipcMain.handle('mirror:init', async (_, serial) => {
+  return await getMirror(serial).startWss()
 })
 
 // ── 화면 캡처 ──────────────────────────────────────────────────
 // 미리보기 → 저장/취소 흐름이라 캡처 시점에는 파일을 만들지 않는다.
 // 버퍼를 들고 있다가 사용자가 '저장'을 누를 때만 디스크에 쓴다.
-let lastCapture = null
+const lastCaptures = new Map()
 
 // exec-out 은 PNG 를 stdout 으로 바로 준다 — sdcard 경유·pull·rm 이 전부 불필요하다
 function screencap(serial) {
@@ -407,12 +768,13 @@ function screencap(serial) {
 ipcMain.handle('adb:screenshot', async (_, serial) => {
   const r = await screencap(serial)
   if (!r.ok) return r
-  lastCapture = r.buf
+  lastCaptures.set(serial, r.buf)
   return { ok: true, dataUrl: 'data:image/png;base64,' + r.buf.toString('base64') }
 })
 
-ipcMain.handle('capture:save', async () => {
-  if (!lastCapture) return { ok: false, message: '저장할 캡처가 없습니다' }
+ipcMain.handle('capture:save', async (_, serial) => {
+  const capture = lastCaptures.get(serial)
+  if (!capture) return { ok: false, message: '저장할 캡처가 없습니다' }
   const { filePath } = await dialog.showSaveDialog(mainWindow, {
     title: '캡처 저장',
     defaultPath: `screenshot_${Date.now()}.png`,
@@ -420,7 +782,7 @@ ipcMain.handle('capture:save', async () => {
   })
   if (!filePath) return { ok: false, canceled: true }
   try {
-    fs.writeFileSync(filePath, lastCapture)
+    fs.writeFileSync(filePath, capture)
     return { ok: true, path: filePath }
   } catch (e) {
     return { ok: false, message: String(e) }
@@ -429,15 +791,16 @@ ipcMain.handle('capture:save', async () => {
 
 // 이미지 클립보드는 렌더러의 ClipboardItem 보다 Electron 네이티브 쪽이 확실하다
 // (버퍼가 이미 메인에 있어서 왕복도 없다)
-ipcMain.handle('capture:copy', () => {
-  if (!lastCapture) return { ok: false, message: '복사할 캡처가 없습니다' }
-  const img = nativeImage.createFromBuffer(lastCapture)
+ipcMain.handle('capture:copy', (_, serial) => {
+  const capture = lastCaptures.get(serial)
+  if (!capture) return { ok: false, message: '복사할 캡처가 없습니다' }
+  const img = nativeImage.createFromBuffer(capture)
   if (img.isEmpty()) return { ok: false, message: '이미지를 읽지 못했습니다' }
   clipboard.writeImage(img)
   return { ok: true }
 })
 
-ipcMain.handle('capture:discard', () => { lastCapture = null; return { ok: true } })
+ipcMain.handle('capture:discard', (_, serial) => { lastCaptures.delete(serial); return { ok: true } })
 
 // ── Jira ───────────────────────────────────────────────────────
 // API 토큰은 OS 키체인(Windows 는 DPAPI)으로 암호화해 userData 에 둔다. 평문으로 굴리면
@@ -474,6 +837,10 @@ ipcMain.handle('jira:load', () => {
     project: c.project || '', projectName: c.projectName || '',
     issueType: c.issueType || '버그',
     fieldDefs: c.fieldDefs || [], fieldValues: c.fieldValues || {},
+    // 스프린트: 'off'(백로그) | 'active'(발행할 때마다 진행 중인 스프린트) | 'fixed'(고른 스프린트)
+    sprintMode: c.sprintMode || 'off',
+    boardId: c.boardId || null, boardName: c.boardName || '',
+    sprintId: c.sprintId || null, sprintName: c.sprintName || '',
     hasToken: !!c.token, encrypted: !!c.enc,
   }
 })
@@ -489,7 +856,14 @@ ipcMain.handle('jira:save', (_, cfg) => {
     issueType: keep(cfg.issueType, prev.issueType), token: keep(cfg.token, prev.token),
     // 고정 필드는 '없애기'도 가능해야 하므로 보낸 그대로 덮어쓴다
     fieldDefs: cfg.fieldDefs ?? prev.fieldDefs, fieldValues: cfg.fieldValues ?? prev.fieldValues,
+    // 스프린트 설정도 '지정 안 함'으로 되돌릴 수 있어야 하므로 보낸 값이 있으면 그대로 덮어쓴다
+    sprintMode: cfg.sprintMode ?? prev.sprintMode ?? 'off',
+    boardId: cfg.sprintMode !== undefined ? (cfg.boardId || null) : prev.boardId,
+    boardName: cfg.sprintMode !== undefined ? (cfg.boardName || '') : prev.boardName,
+    sprintId: cfg.sprintMode !== undefined ? (cfg.sprintId || null) : prev.sprintId,
+    sprintName: cfg.sprintMode !== undefined ? (cfg.sprintName || '') : prev.sprintName,
   }
+  if (!['off', 'active', 'fixed'].includes(next.sprintMode)) next.sprintMode = 'off'
   try {
     saveJiraCfg(next)
     return { ok: true, encrypted: safeStorage.isEncryptionAvailable() }
@@ -511,6 +885,11 @@ ipcMain.handle('jira:assignable', (_, { projectKey, query }) =>
 ipcMain.handle('jira:fields', (_, { projectKey, issueTypeId }) =>
   jira.listCreateFields(loadJiraCfg(), projectKey, issueTypeId))
 
+// 스프린트 설정용 — 프로젝트의 보드, 보드의 진행 중·예정 스프린트
+ipcMain.handle('jira:boards', (_, projectKey) => jira.listBoards(loadJiraCfg(), projectKey))
+
+ipcMain.handle('jira:sprints', (_, boardId) => jira.listSprints(loadJiraCfg(), boardId))
+
 ipcMain.handle('jira:create', async (_, issue) => {
   const cfg = loadJiraCfg()
   // 등록 팝업에서 고른 추가 필드를 Jira 모양으로 바꿔 같이 보낸다
@@ -518,6 +897,21 @@ ipcMain.handle('jira:create', async (_, issue) => {
   if (issue.assigneeId) extra.assignee = { accountId: issue.assigneeId }
   const r = await jira.createIssue(cfg, { ...issue, project: issue.project || cfg.project, extra })
   if (!r.ok) return r
+
+  // QA 실패 항목에서 연 경우: 실행 기록에 남은 증거(스크린샷·화면 구조·logcat)를 붙인다.
+  // 렌더러가 보낸 경로는 실행 기록 폴더 안의 것만 받는다.
+  if (issue.qaRunId && Array.isArray(issue.qaEvidence)) {
+    for (const rel of issue.qaEvidence.slice(0, 10)) {
+      const p = qaEvidencePath(issue.qaRunId, rel)
+      if (!p) continue
+      try {
+        const a = await jira.attachFile(cfg, r.key, `${issue.qaItemId || 'qa'}_${path.basename(p)}`, fs.readFileSync(p))
+        if (!a.ok) r.warn = (r.warn ? r.warn + ' / ' : '') + `증거 첨부 실패(${path.basename(p)}): ${a.message}`
+      } catch (e) {
+        r.warn = (r.warn ? r.warn + ' / ' : '') + `증거 파일을 읽지 못했습니다: ${e.message}`
+      }
+    }
+  }
 
   // 이슈는 이미 만들어졌으니, 첨부가 실패해도 성공으로 돌려주고 사유만 같이 준다
   if (issue.attachShot && issue.serial) {
@@ -543,6 +937,20 @@ ipcMain.handle('jira:create', async (_, issue) => {
       r.warn = (r.warn ? r.warn + ' / ' : '') + '영상 파일을 읽지 못했습니다: ' + e.message
     }
   }
+
+  // 스프린트 지정 — 첨부와 마찬가지로 실패해도 이슈는 이미 만들어졌으니 경고로만 돌려준다.
+  // '진행 중' 모드는 발행할 때마다 지금 진행 중인 스프린트를 찾으므로 스프린트가 바뀌어도 설정을 다시 할 필요가 없다.
+  const sprintWarn = msg => { r.warn = (r.warn ? r.warn + ' / ' : '') + msg }
+  if (cfg.sprintMode === 'active' || cfg.sprintMode === 'fixed') {
+    const target = await jira.resolveSprint(cfg, cfg)
+    if (!target.ok) sprintWarn('스프린트 지정 실패: ' + target.message)
+    else if (!target.sprint) { if (target.message) sprintWarn(target.message) }
+    else {
+      const a = await jira.addIssueToSprint(cfg, target.sprint.id, r.key)
+      if (a.ok) r.sprint = target.sprint.name
+      else sprintWarn(`스프린트 '${target.sprint.name}' 추가 실패: ${a.message}`)
+    }
+  }
   return r
 })
 
@@ -553,9 +961,7 @@ ipcMain.handle('jira:open', (_, url) => {
   return { ok: true }
 })
 
-// 디바이스와 LogCat 이 잘리지 않는 선까지만 창을 줄일 수 있게 한다. 필요한 크기는 렌더러가
-// 실제 레이아웃을 재서 넘겨준다(디바이스 너비가 창 높이에 따라 달라지기 때문).
-// 최소 '너비'만 갱신한다. 최소 높이는 실행 시 높이로 고정되어 있으므로 건드리지 않는다.
+// 렌더러가 레이아웃에 필요한 최소 너비를 요청할 수 있다. 시작 크기보다 더 작게도 줄일 수 있다.
 ipcMain.handle('window:set-min-size', (_, width) => {
   if (!mainWindow || !Number.isFinite(width)) return { ok: false }
   // 렌더러가 보내는 값은 '콘텐츠' 기준인데 setMinimumSize 는 창 테두리를 포함한 크기다.
@@ -564,8 +970,7 @@ ipcMain.handle('window:set-min-size', (_, width) => {
   const [contentW] = mainWindow.getContentSize()
   const frameW = Math.max(0, winW - contentW)
 
-  // 실행 시 너비가 하한이다 — 레이아웃이 더 넓게 요구할 때만 올라간다.
-  const w = Math.max(launchWidth, Math.round(width) + frameW)
+  const w = Math.max(MIN_WINDOW_WIDTH, Math.round(width) + frameW)
   const [, minH] = mainWindow.getMinimumSize()
   mainWindow.setMinimumSize(w, minH)
   // 이미 그보다 좁으면 넓혀 준다 (setMinimumSize 만으로는 기존 창이 안 바뀐다)
@@ -577,7 +982,7 @@ ipcMain.handle('window:set-min-size', (_, width) => {
 // 녹화 시작. ADB 프로세스가 즉시 종료되면 시작 실패로 보고, 실제로 살아 있는지 확인한 뒤
 // 성공을 반환한다. screenrecord 는 동작 중 별도 출력을 내지 않으므로 잠시 생존 여부를 본다.
 ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
-  if (recordingProcess) return { ok: false, message: '이미 녹화 중입니다' }
+  if (recordingProcesses.has(serial)) return { ok: false, message: '이미 녹화 중입니다' }
   if (!adbPath) return { ok: false, message: 'adb 를 찾을 수 없습니다' }
 
   const args = ['-s', serial, 'shell', 'screenrecord',
@@ -595,8 +1000,8 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
       resolve({ ok: false, message: `adb 녹화 실행 실패: ${error.message}` })
       return
     }
-    recordingProcess = proc
-    recordingStopping = false
+    recordingProcesses.set(serial, proc)
+    recordingStopping.delete(serial)
     const finishStart = result => {
       if (!startupTimer) return
       clearTimeout(startupTimer)
@@ -607,23 +1012,23 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
     proc.stdout.on('data', collect)
     proc.stderr.on('data', collect)
     proc.on('error', error => {
-      if (recordingProcess === proc) recordingProcess = null
+      if (recordingProcesses.get(serial) === proc) recordingProcesses.delete(serial)
       finishStart({ ok: false, message: `adb 녹화 실행 실패: ${error.message}` })
-      if (started && !recordingStopping) {
-        mainWindow?.webContents.send('adb:record-ended', { message: error.message })
+      if (started && !recordingStopping.has(serial)) {
+        mainWindow?.webContents.send('adb:record-ended', { message: error.message }, serial)
       }
     })
     proc.on('close', code => {
-      if (recordingProcess === proc) recordingProcess = null
+      if (recordingProcesses.get(serial) === proc) recordingProcesses.delete(serial)
       if (!started) {
         finishStart({
           ok: false,
           message: output.trim() || `녹화를 시작하지 못했습니다 (종료 코드 ${code})`,
         })
-      } else if (!recordingStopping) {
+      } else if (!recordingStopping.has(serial)) {
         mainWindow?.webContents.send('adb:record-ended', {
           message: output.trim() || `기기 녹화가 종료되었습니다 (종료 코드 ${code})`,
-        })
+        }, serial)
       }
     })
     startupTimer = setTimeout(() => {
@@ -637,8 +1042,8 @@ ipcMain.handle('adb:record-start', async (_, { serial, bitrate, size }) => {
 // 마치고 스스로 종료할 때까지 대기한다. 여기서 로컬 adb 를 먼저 kill 하면 shell 세션이
 // 끊기며 그 마무리가 중단되어 moov 없는 미완결 mp4(재생 불가)가 남는다.
 // 종료 제한을 넘기면 ADB 를 끊고 오류를 반환해 저장 파일이 불완전할 수 있음을 알린다.
-function waitRecordingExit(timeoutMs = 15000) {
-  const proc = recordingProcess
+function waitRecordingExit(serial, timeoutMs = 15000) {
+  const proc = recordingProcesses.get(serial)
   if (!proc) return Promise.resolve(false)
   return new Promise(resolve => {
     const timer = setTimeout(() => { proc.kill(); resolve(true) }, timeoutMs)
@@ -649,11 +1054,11 @@ function waitRecordingExit(timeoutMs = 15000) {
 // 녹화 중지 + 저장
 ipcMain.handle('adb:record-stop', async (_, serial) => {
   try {
-    recordingStopping = true
+    recordingStopping.add(serial)
     // 기기에서 실행 중인 screenrecord 프로세스에 SIGINT 전송 (정상 종료 → 파일 무결성 보장)
     await runAdb(['-s', serial, 'shell', 'pkill', '-2', 'screenrecord']).catch(() => { })
-    const timedOut = await waitRecordingExit()
-    recordingProcess = null
+    const timedOut = await waitRecordingExit(serial)
+    recordingProcesses.delete(serial)
     if (timedOut) throw new Error('녹화 종료 응답이 늦어 저장 파일이 불완전할 수 있습니다')
     const { filePath } = await dialog.showSaveDialog(mainWindow, {
       title: '녹화 파일 저장',
@@ -665,7 +1070,9 @@ ipcMain.handle('adb:record-stop', async (_, serial) => {
     await runAdb(['-s', serial, 'shell', 'rm', '/sdcard/_db_rec.mp4'])
     return { ok: true, path: filePath }
   } catch (e) { return { ok: false, message: String(e) } }
-  finally { recordingStopping = false }
+  finally {
+    recordingStopping.delete(serial)
+  }
 })
 
 // APK 선택 다이얼로그
@@ -873,30 +1280,41 @@ ipcMain.handle('device:info', async (_, serial) => {
 })
 
 // ── LogCat 스트리밍 ────────────────────────────────────────────
-let logcatProcess = null
+const logcatProcesses = new Map()
 
-function stopLogcat() {
-  if (logcatProcess) { logcatProcess.kill(); logcatProcess = null }
+function stopLogcat(serial) {
+  if (serial) {
+    const proc = logcatProcesses.get(serial)
+    if (proc) { proc.kill(); logcatProcesses.delete(serial) }
+    return
+  }
+  logcatProcesses.forEach(proc => proc.kill())
+  logcatProcesses.clear()
 }
 
 ipcMain.handle('logcat:start', async (_, serial) => {
-  stopLogcat()
   try {
+    if (!serial) return { ok: false, message: 'LogCat 기기를 지정해야 합니다' }
+    stopLogcat(serial)
     // -T 200: 버퍼 전체(수만 줄)가 아니라 최근 200줄부터 흘린다
     const proc = spawn(adbPath, ['-s', serial, 'logcat', '-v', 'threadtime', '-T', '200'])
-    logcatProcess = proc
-    const send = d => mainWindow?.webContents.send('logcat:data', d.toString())
+    logcatProcesses.set(serial, proc)
+    const send = d => mainWindow?.webContents.send('logcat:data', d.toString(), serial)
     proc.stdout.on('data', send)
     proc.stderr.on('data', send)
     // 핸들러가 없으면 spawn 실패 시 처리되지 않은 'error' 로 메인 프로세스가 죽는다
     proc.on('error', e => {
-      mainWindow?.webContents.send('logcat:data', `[logcat 실행 실패] ${e.message}\n`)
-      if (logcatProcess === proc) logcatProcess = null
-      mainWindow?.webContents.send('logcat:stopped')
+      mainWindow?.webContents.send('logcat:data', `[logcat 실행 실패] ${e.message}\n`, serial)
+      if (logcatProcesses.get(serial) === proc) {
+        logcatProcesses.delete(serial)
+        mainWindow?.webContents.send('logcat:stopped', serial)
+      }
     })
     proc.on('close', () => {
-      if (logcatProcess === proc) logcatProcess = null
-      mainWindow?.webContents.send('logcat:stopped')
+      if (logcatProcesses.get(serial) === proc) {
+        logcatProcesses.delete(serial)
+        mainWindow?.webContents.send('logcat:stopped', serial)
+      }
     })
     return { ok: true }
   } catch (e) {
@@ -904,8 +1322,8 @@ ipcMain.handle('logcat:start', async (_, serial) => {
   }
 })
 
-ipcMain.handle('logcat:stop', async () => {
-  stopLogcat()
+ipcMain.handle('logcat:stop', async (_, serial) => {
+  stopLogcat(serial)
   return { ok: true }
 })
 
@@ -926,6 +1344,442 @@ ipcMain.handle('logcat:save', async (_, text) => {
     return { ok: false, message: String(e) }
   }
 })
+
+// ── QA 자동 진행 (체크리스트 → 시나리오 실행 → 회차 기록) ───────────────────
+// 저장 위치 (전부 userData 아래 — 저장소가 공개라 계정·결과를 코드 쪽에 두지 않는다)
+//   qa-accounts.json              테스트 계정. 비밀번호는 safeStorage 로 암호화, 렌더러로 돌려보내지 않는다
+//   qa-checklists/<appId>.json    가져온 체크리스트 (시트 CSV 를 읽은 결과)
+//   qa-scenarios/<appId>/*.json   사용자가 추가하는 시나리오 (앱에 들어 있는 qa/scenarios/<appId> 보다 우선)
+//   qa-runs/<runId>/result.json   실행 기록 + 항목별 증거(스크린샷·화면 구조·logcat)
+const QA_ACCOUNTS = path.join(app.getPath('userData'), 'qa-accounts.json')
+const QA_CHECKLISTS = path.join(app.getPath('userData'), 'qa-checklists')
+const QA_USER_SCENARIOS = path.join(app.getPath('userData'), 'qa-scenarios')
+const QA_RUNS = path.join(app.getPath('userData'), 'qa-runs')
+const QA_BUILTIN_SCENARIOS = path.join(__dirname, '..', 'qa', 'scenarios')
+const ACCOUNT_FIELDS = ['label', 'id', 'company', 'phone', 'name', 'email']
+const safeId = s => /^[a-z][a-z0-9-]*$/.test(String(s || ''))
+
+// ── 테스트 계정 ──
+function loadQaAccountsRaw() {
+  try {
+    const list = JSON.parse(fs.readFileSync(QA_ACCOUNTS, 'utf8'))
+    return Array.isArray(list) ? list : []
+  } catch { return [] }
+}
+
+function saveQaAccountsRaw(list) {
+  fs.writeFileSync(QA_ACCOUNTS, JSON.stringify(list, null, 2), { mode: 0o600 })
+}
+
+// 실행기용 — 비밀번호를 풀어서 준다. 렌더러로는 절대 보내지 않는다.
+function qaAccountForRun(key) {
+  const a = loadQaAccountsRaw().find(x => x.key === key)
+  if (!a) return null
+  let password = ''
+  if (a.password) {
+    try { password = a.enc ? safeStorage.decryptString(Buffer.from(a.password, 'base64')) : a.password } catch { password = '' }
+  }
+  const out = { password }
+  for (const f of ACCOUNT_FIELDS) out[f] = a[f] || ''
+  return out
+}
+
+ipcMain.handle('qa:accounts-load', () => ({
+  ok: true,
+  accounts: loadQaAccountsRaw().map(a => {
+    const out = { key: a.key, hasPassword: !!a.password }
+    for (const f of ACCOUNT_FIELDS) out[f] = a[f] || ''
+    return out
+  }),
+}))
+
+// 저장. password 가 빈 문자열이면 기존 비밀번호를 그대로 둔다 (Jira 토큰과 같은 방식).
+ipcMain.handle('qa:accounts-save', (_, acc = {}) => {
+  try {
+    const list = loadQaAccountsRaw()
+    const key = acc.key || `acc-${Date.now().toString(36)}`
+    const prev = list.find(x => x.key === key) || {}
+    const next = { ...prev, key }
+    for (const f of ACCOUNT_FIELDS) next[f] = String(acc[f] ?? prev[f] ?? '').trim()
+    if (!next.label) next.label = next.id || '이름 없는 계정'
+    if (acc.password) {
+      if (safeStorage.isEncryptionAvailable()) {
+        next.password = safeStorage.encryptString(String(acc.password)).toString('base64')
+        next.enc = true
+      } else { next.password = String(acc.password); next.enc = false }
+    }
+    const i = list.findIndex(x => x.key === key)
+    if (i >= 0) list[i] = next; else list.push(next)
+    saveQaAccountsRaw(list)
+    return { ok: true, key, encrypted: next.password ? !!next.enc : true }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
+})
+
+ipcMain.handle('qa:accounts-delete', (_, key) => {
+  try {
+    saveQaAccountsRaw(loadQaAccountsRaw().filter(x => x.key !== key))
+    return { ok: true }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
+})
+
+// ── 체크리스트 ──
+function qaChecklistFile(appId) { return path.join(QA_CHECKLISTS, `${appId}.json`) }
+
+function loadQaChecklist(appId) {
+  if (!safeId(appId)) return null
+  try { return JSON.parse(fs.readFileSync(qaChecklistFile(appId), 'utf8')) } catch { return null }
+}
+
+ipcMain.handle('qa:checklist', (_, appId) => {
+  const c = loadQaChecklist(appId)
+  return c ? { ok: true, checklist: c } : { ok: true, checklist: null }
+})
+
+// 시트를 CSV 로 내려받은 파일을 가져온다. 앱마다 하나 — 다시 가져오면 바꾼다.
+ipcMain.handle('qa:checklist-import', async (_, { appId, filePath } = {}) => {
+  try {
+    if (!safeId(appId) || !qaApps.findApp(appId)) return { ok: false, message: '등록되지 않은 앱입니다' }
+    let file = filePath
+    if (!file) {
+      const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        title: '체크리스트 CSV 선택 (구글 시트 → 파일 → 다운로드 → CSV)',
+        filters: [{ name: 'CSV', extensions: ['csv'] }],
+        properties: ['openFile'],
+      })
+      if (canceled || !filePaths?.length) return { ok: false, canceled: true }
+      file = filePaths[0]
+    }
+    const parsed = qaChecklist.parseChecklist(fs.readFileSync(file, 'utf8'), { name: path.basename(file, path.extname(file)) })
+    if (!parsed.ok) return parsed
+    const data = { appId, name: parsed.name, file, importedAt: new Date().toISOString(), columns: parsed.columns, warnings: parsed.warnings, items: parsed.items }
+    fs.mkdirSync(QA_CHECKLISTS, { recursive: true })
+    fs.writeFileSync(qaChecklistFile(appId), JSON.stringify(data, null, 2))
+    logMirror(`[QA] 체크리스트 가져옴: ${path.basename(file)} — ${parsed.items.length}개 항목${parsed.warnings.length ? ` (경고 ${parsed.warnings.length})` : ''}`)
+    return { ok: true, checklist: data }
+  } catch (e) { return { ok: false, message: `체크리스트를 읽지 못했습니다: ${e?.message || e}` } }
+})
+
+// ── 시나리오 ──
+// 앱에 들어 있는 것(qa/scenarios/<appId>) 다음에 사용자 폴더(userData/qa-scenarios/<appId>)를 읽어,
+// 같은 id 는 사용자 것이 이긴다. 앱을 새로 빌드하지 않고 QA 담당자가 시나리오를 더할 수 있게.
+function loadQaScenarios(appId) {
+  const files = []
+  for (const [dir, origin] of [[path.join(QA_BUILTIN_SCENARIOS, appId), '앱 기본'], [path.join(QA_USER_SCENARIOS, appId), '사용자']]) {
+    let names = []
+    try { names = fs.readdirSync(dir).filter(n => n.toLowerCase().endsWith('.json')).sort() } catch { continue }
+    for (const n of names) {
+      try { files.push({ name: `${origin}/${n}`, data: JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')) }) } catch (e) {
+        files.push({ name: `${origin}/${n}`, data: null, error: `JSON 오류: ${e.message}` })
+      }
+    }
+  }
+  const col = qaScenario.collectScenarios(files.filter(f => f.data))
+  for (const f of files) if (f.error) col.errors.unshift(`${f.name}: ${f.error}`)
+  return col
+}
+
+ipcMain.handle('qa:scenarios', (_, appId) => {
+  if (!safeId(appId)) return { ok: false, message: '앱이 올바르지 않습니다' }
+  const { scenarios, procedures, errors } = loadQaScenarios(appId)
+  return {
+    ok: true,
+    scenarios: [...scenarios.values()].map(s => ({
+      id: s.id, title: s.title || '', mode: s.mode || 'auto', roles: s.roles || ['A'],
+      update: s.update || '', variants: s.variants || null, file: s._file,
+    })),
+    procedures: Object.keys(procedures),
+    errors,
+    userDir: path.join(QA_USER_SCENARIOS, appId),
+  }
+})
+
+ipcMain.handle('qa:scenario-folder', async (_, appId) => {
+  if (!safeId(appId)) return { ok: false, message: '앱이 올바르지 않습니다' }
+  const dir = path.join(QA_USER_SCENARIOS, appId)
+  fs.mkdirSync(dir, { recursive: true })
+  const err = await shell.openPath(dir)
+  return err ? { ok: false, message: err } : { ok: true, dir }
+})
+
+// ── 실행 기록 ──
+function loadQaRuns() {
+  let dirs = []
+  try { dirs = fs.readdirSync(QA_RUNS) } catch { return [] }
+  const runs = []
+  for (const d of dirs) {
+    try { runs.push(JSON.parse(fs.readFileSync(path.join(QA_RUNS, d, 'result.json'), 'utf8'))) } catch { }
+  }
+  return runs.sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))
+}
+
+function qaRunDir(runId) {
+  if (!/^[0-9]{8}-[0-9]{6}(-\d+)?$/.test(String(runId || ''))) return null
+  return path.join(QA_RUNS, runId)
+}
+
+function saveQaRun(run) {
+  const dir = qaRunDir(run.id)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify(run, null, 2))
+}
+
+ipcMain.handle('qa:runs', (_, { appId, variantId } = {}) => ({
+  ok: true,
+  runs: loadQaRuns()
+    .filter(r => (!appId || r.app?.id === appId) && (!variantId || r.app?.variant === variantId))
+    .map(r => ({ id: r.id, startedAt: r.startedAt, finishedAt: r.finishedAt, app: r.app, build: r.build, update: r.update, scope: r.scope, summary: r.summary, stopped: !!r.stopped })),
+}))
+
+ipcMain.handle('qa:run-detail', (_, runId) => {
+  const dir = qaRunDir(runId)
+  if (!dir) return { ok: false, message: '실행 기록 id 가 올바르지 않습니다' }
+  try { return { ok: true, run: JSON.parse(fs.readFileSync(path.join(dir, 'result.json'), 'utf8')) } } catch (e) {
+    return { ok: false, message: `실행 기록을 읽지 못했습니다: ${e.message}` }
+  }
+})
+
+// 증거 파일 열기 — 실행 기록 폴더 안의 파일만
+function qaEvidencePath(runId, rel) {
+  const dir = qaRunDir(runId)
+  if (!dir || typeof rel !== 'string') return null
+  const p = path.resolve(dir, rel)
+  return p.startsWith(path.resolve(dir) + path.sep) ? p : null
+}
+
+ipcMain.handle('qa:evidence-open', async (_, { runId, file } = {}) => {
+  const p = file ? qaEvidencePath(runId, file) : qaRunDir(runId)
+  if (!p) return { ok: false, message: '열 수 없는 경로입니다' }
+  const err = await shell.openPath(p)
+  return err ? { ok: false, message: err } : { ok: true }
+})
+
+// 실패 항목으로 Jira 티켓을 만들면 그 키를 기록에 남긴다 — 다음 회차에서 "수정 확인/재발" 을 이어 본다
+ipcMain.handle('qa:link-jira', (_, { runId, itemId, phase = '', key } = {}) => {
+  try {
+    const dir = qaRunDir(runId)
+    if (!dir || !key) return { ok: false, message: '잘못된 요청입니다' }
+    const file = path.join(dir, 'result.json')
+    const run = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const it = run.items.find(i => i.id === itemId && (i.phase || '') === phase)
+    if (!it) return { ok: false, message: '항목을 찾지 못했습니다' }
+    it.jira = String(key)
+    fs.writeFileSync(file, JSON.stringify(run, null, 2))
+    return { ok: true }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
+})
+
+// 시트에 붙여 넣을 CSV (ID, 결과, 버그 내용) — 이번 회차에 안 돌린 항목은 지난 결과로 채운다
+ipcMain.handle('qa:export', async (_, runId) => {
+  try {
+    const dir = qaRunDir(runId)
+    if (!dir) return { ok: false, message: '실행 기록 id 가 올바르지 않습니다' }
+    const run = JSON.parse(fs.readFileSync(path.join(dir, 'result.json'), 'utf8'))
+    const checklist = loadQaChecklist(run.app.id)
+    const items = checklist?.items || run.items.map(i => ({ id: i.id }))
+    const latest = qaResults.latestResults(loadQaRuns(), { appId: run.app.id, variantId: run.app.variant, before: new Date(run.startedAt).getTime() })
+    const csv = qaResults.toSheetCsv(items, run.items, latest)
+    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'QA 결과 CSV 저장',
+      defaultPath: `QA_${run.app.id}_${run.app.variant}_${run.id}.csv`,
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    })
+    if (canceled || !filePath) return { ok: false, canceled: true }
+    fs.writeFileSync(filePath, csv)
+    return { ok: true, filePath }
+  } catch (e) { return { ok: false, message: String(e?.message || e) } }
+})
+
+// 실행 전에 이번 범위에 몇 항목이 드는지 미리 보여 준다
+function qaSelection({ appId, variantId, scope, picked, keepPriority }) {
+  const checklist = loadQaChecklist(appId)
+  if (!checklist) return { ok: false, message: '체크리스트를 먼저 가져와 주세요' }
+  const { scenarios } = loadQaScenarios(appId)
+  const latest = qaResults.latestResults(loadQaRuns(), { appId, variantId })
+  const items = qaResults.selectItems({ items: checklist.items, scenarios, latest, scope, picked, keepPriority, variantId })
+  return { ok: true, checklist, scenarios, latest, items }
+}
+
+ipcMain.handle('qa:run-preview', (_, opts = {}) => {
+  const s = qaSelection(opts)
+  if (!s.ok) return s
+  const withScenario = s.items.filter(i => s.scenarios.has(i.id)).length
+  return {
+    ok: true, count: s.items.length, withScenario, manual: s.items.length - withScenario, total: s.checklist.items.length,
+    latest: s.latest,
+  }
+})
+
+// ── 실행 ──
+// 기기마다 logcat 을 따로 띄워 항목 구간만 잘라 증거로 남긴다. 화면의 LogCat(logcat:start)과는 별개 프로세스다.
+function startQaLogcat(serial) {
+  const lines = []
+  let dropped = 0
+  let pending = ''
+  const proc = spawn(adbPath, ['-s', serial, 'logcat', '-v', 'threadtime', '-T', '1'])
+  proc.on('error', e => logMirror(`[QA] ${serial} logcat 실행 실패: ${e.message}`))
+  proc.stdout.on('data', d => {
+    const parts = (pending + d.toString('utf8')).split(/\r?\n/)
+    pending = parts.pop()
+    lines.push(...parts)
+    if (lines.length > 60000) { const cut = lines.length - 50000; lines.splice(0, cut); dropped += cut }
+  })
+  proc.stderr.on('data', () => { })
+  return {
+    mark: () => dropped + lines.length,
+    slice: m => lines.slice(Math.max(0, m - dropped)),
+    stop: () => { try { proc.kill() } catch { } },
+  }
+}
+
+let qaActive = null      // { runner, runId, pendingAsk: Map, logcats }
+
+function qaSend(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
+}
+
+function newRunId() {
+  const d = new Date()
+  const p = n => String(n).padStart(2, '0')
+  const base = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  let id = base
+  let n = 1
+  while (fs.existsSync(path.join(QA_RUNS, id))) id = `${base}-${n++}`
+  return id
+}
+
+// opts = { appId, roles: { A: { serial, variantId, accountKey }, ... }, scope, picked, keepPriority, update, manualForUnscripted }
+ipcMain.handle('qa:run', async (_, opts = {}) => {
+  if (qaActive) return { ok: false, message: '이미 QA 를 실행 중입니다' }
+  try {
+    const app0 = qaApps.findApp(opts.appId)
+    if (!app0) return { ok: false, message: '등록되지 않은 앱입니다' }
+    const roleCfg = opts.roles || {}
+    if (!roleCfg.A?.serial) return { ok: false, message: '역할 A(시험 대상) 기기를 선택해 주세요' }
+    const dutVariant = qaApps.findVariant(app0.id, roleCfg.A.variantId)
+    if (!dutVariant) return { ok: false, message: '역할 A 의 앱 타입을 선택해 주세요' }
+    const serials = Object.values(roleCfg).map(r => r?.serial).filter(Boolean)
+    if (new Set(serials).size !== serials.length) return { ok: false, message: '한 기기를 두 역할에 배정할 수 없습니다' }
+
+    const sel = qaSelection({ appId: app0.id, variantId: dutVariant.id, scope: opts.scope, picked: opts.picked, keepPriority: opts.keepPriority })
+    if (!sel.ok) return sel
+    if (!sel.items.length) return { ok: false, message: '이번 범위에 실행할 항목이 없습니다' }
+    if (opts.update) {
+      const base = qaApkEntry(app0.id, dutVariant.id, 'base')
+      const upd = qaApkEntry(app0.id, dutVariant.id, 'update')
+      if (!base || !upd) return { ok: false, message: `업데이트 테스트를 하려면 ${dutVariant.name} 의 기존 버전·업데이트 APK 를 둘 다 등록해 주세요` }
+    }
+
+    const roles = {}
+    const logcats = {}
+    for (const [role, rc] of Object.entries(roleCfg)) {
+      if (!rc?.serial) continue
+      const variant = qaApps.findVariant(app0.id, rc.variantId) || dutVariant
+      const account = rc.accountKey ? qaAccountForRun(rc.accountKey) : null
+      if (rc.accountKey && !account) return { ok: false, message: `역할 ${role} 의 테스트 계정을 찾지 못했습니다` }
+      roles[role] = { driver: getQaDriver(rc.serial), pkg: variant.pkg, variantId: variant.id, account, serial: rc.serial }
+    }
+    for (const [role, r] of Object.entries(roles)) logcats[role] = startQaLogcat(r.serial)
+
+    const runId = newRunId()
+    const runDir = qaRunDir(runId)
+    fs.mkdirSync(runDir, { recursive: true })
+    const startedAt = new Date().toISOString()
+    const before = await qaInstalledInfo(roles.A.serial, dutVariant.pkg).catch(() => ({ installed: null }))
+    const pendingAsk = new Map()
+    let askSeq = 0
+
+    const runner = qaRunner.createRunner({
+      roles,
+      scenarios: sel.scenarios,
+      procedures: loadQaScenarios(app0.id).procedures,
+      options: { manualForUnscripted: opts.manualForUnscripted !== false },
+      hooks: {
+        progress: e => qaSend('qa:progress', { runId, ...e }),
+        ask: req => new Promise(resolve => {
+          const id = ++askSeq
+          pendingAsk.set(id, resolve)
+          qaSend('qa:prompt', { runId, requestId: id, ...req })
+        }),
+        evidence: async (itemId, role, file, data) => {
+          const rel = path.join(itemId.replace(/[^\w.-]/g, '_'), file)
+          const p = path.join(runDir, rel)
+          fs.mkdirSync(path.dirname(p), { recursive: true })
+          fs.writeFileSync(p, data)
+          return rel.split(path.sep).join('/')
+        },
+        logcat: { mark: role => logcats[role]?.mark() ?? 0, slice: (role, m) => logcats[role]?.slice(m) ?? [] },
+        installApk: async kind => {
+          qaSend('qa:progress', { runId, type: 'log', message: `${dutVariant.name} ${kind === 'base' ? '기존 버전' : '업데이트'} 설치 중...` })
+          return qaInstallApk({ serial: roles.A.serial, appId: app0.id, variantId: dutVariant.id, kind })
+        },
+      },
+    })
+    qaActive = { runner, runId, pendingAsk, logcats }
+    logMirror(`[QA] 실행 시작 ${runId}: ${app0.name} ${dutVariant.name} · ${sel.items.length}개 항목${opts.update ? ' · 업데이트 테스트' : ''}`)
+    qaSend('qa:progress', { runId, type: 'run-start', total: sel.items.length, update: !!opts.update })
+
+    // 실행은 기다리지 않고 돌려보낸다 — 진행은 qa:progress 로 흘린다
+    ;(async () => {
+      let out = { items: [], stopped: false }
+      let error = ''
+      try { out = await runner.run({ items: sel.items, update: !!opts.update }) } catch (e) { error = String(e?.message || e) }
+      for (const l of Object.values(logcats)) l.stop()
+      const after = await qaInstalledInfo(roles.A.serial, dutVariant.pkg).catch(() => ({ installed: null }))
+      const items = out.items.map(it => ({
+        ...it,
+        change: it.phase === 'before' ? '' : qaResults.classifyChange(sel.latest[it.id]?.status, it.status),
+        prev: sel.latest[it.id] ? { status: sel.latest[it.id].status, runId: sel.latest[it.id].runId, jira: sel.latest[it.id].jira || '' } : null,
+        jira: sel.latest[it.id]?.jira && it.status !== 'Pass' ? sel.latest[it.id].jira : '',
+      }))
+      const apkInfoOf = kind => {
+        const e = qaApkEntry(app0.id, dutVariant.id, kind)
+        const i = e?.info || {}
+        return e ? { fileName: path.basename(e.path), versionName: i.versionName, versionCode: i.versionCode, sha256: i.signer?.sha256?.slice(0, 12) || '' } : null
+      }
+      const run = {
+        id: runId, startedAt, finishedAt: new Date().toISOString(),
+        app: { id: app0.id, name: app0.name, variant: dutVariant.id, variantName: dutVariant.name, pkg: dutVariant.pkg },
+        build: after.installed || before.installed || null,
+        buildBefore: before.installed || null,
+        update: opts.update ? { base: apkInfoOf('base'), update: apkInfoOf('update') } : null,
+        scope: { mode: opts.scope || 'default', keepPriority: opts.keepPriority ?? null, picked: opts.scope === 'custom' ? (opts.picked || []) : undefined },
+        devices: Object.fromEntries(Object.entries(roles).map(([k, r]) => [k, { serial: r.serial, variant: r.variantId }])),
+        checklist: sel.checklist.name,
+        stopped: !!out.stopped, error: error || out.message || '',
+        items,
+        summary: qaResults.summarize(items),
+      }
+      try { saveQaRun(run) } catch (e) { logMirror(`[QA] 실행 기록 저장 실패: ${e.message}`) }
+      qaActive = null
+      const s = run.summary
+      logMirror(`[QA] 실행 끝 ${runId}: Pass ${s.Pass} · Fail ${s.Fail} · Blocked ${s.Blocked} · 회귀 ${s.regression} · 수정 확인 ${s.fixed}${run.stopped ? ' (중단됨)' : ''}${run.error ? ` — ${run.error}` : ''}`)
+      qaSend('qa:progress', { runId, type: 'run-end', summary: s, stopped: run.stopped, error: run.error })
+    })()
+    return { ok: true, runId, count: sel.items.length }
+  } catch (e) {
+    qaActive = null
+    return { ok: false, message: String(e?.message || e) }
+  }
+})
+
+// 중단 — 지금 단계가 끝나면 멈추고, teardown 은 끝까지 돈다. 사람 응답을 기다리던 중이면 그것도 끝낸다.
+ipcMain.handle('qa:stop', () => {
+  if (!qaActive) return { ok: false, message: '실행 중이 아닙니다' }
+  qaActive.runner.stop()
+  for (const resolve of qaActive.pendingAsk.values()) resolve({ action: 'stop' })
+  qaActive.pendingAsk.clear()
+  return { ok: true }
+})
+
+ipcMain.handle('qa:answer', (_, { requestId, answer } = {}) => {
+  const resolve = qaActive?.pendingAsk.get(requestId)
+  if (!resolve) return { ok: false, message: '기다리는 질문이 없습니다' }
+  qaActive.pendingAsk.delete(requestId)
+  resolve(answer || {})
+  return { ok: true }
+})
+
+ipcMain.handle('qa:status', () => ({ ok: true, running: !!qaActive, runId: qaActive?.runId || '' }))
 
 // ── 세팅 체크 ──────────────────────────────────────────────────
 ipcMain.handle('setup:check', async () => {

@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="ko" data-theme="graphite">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DroidBridge 색상 방향 프로토타입</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #101214;
+      --panel: #191c1f;
+      --panel-raised: #202428;
+      --panel-soft: #171a1d;
+      --line: #30363a;
+      --text: #e8ecec;
+      --muted: #9aa3a5;
+      --quiet: #737d80;
+      --accent: #e0a14a;
+      --accent-strong: #f0b660;
+      --accent-ink: #17120a;
+      --accent-soft: #342718;
+      --good: #75c69a;
+      --good-soft: #1d3328;
+      --warn: #e4b85e;
+      --danger: #ee7c73;
+      --danger-soft: #3a211f;
+      --phone: #f3f5f4;
+      --phone-text: #1c2426;
+      --phone-muted: #657174;
+      --phone-card: #fff;
+      --phone-card-alt: #e7efec;
+      --shadow: 0 16px 42px #0005;
+      --radius: 10px;
+      font: 14px/1.45 "Segoe UI", "Malgun Gothic", sans-serif;
+    }
+
+    html[data-theme="forest"] {
+      color-scheme: light;
+      --page: #e8e8e0;
+      --panel: #f6f5ef;
+      --panel-raised: #fffefa;
+      --panel-soft: #efeee7;
+      --line: #d7d8cd;
+      --text: #252c29;
+      --muted: #656f69;
+      --quiet: #818a83;
+      --accent: #356a57;
+      --accent-strong: #285643;
+      --accent-ink: #fff;
+      --accent-soft: #e1ece5;
+      --good: #327958;
+      --good-soft: #e2eee6;
+      --warn: #986a1b;
+      --danger: #bd5549;
+      --danger-soft: #f7e7e2;
+      --phone: #f7f6f0;
+      --phone-text: #25302c;
+      --phone-muted: #6f7a73;
+      --phone-card: #fffefa;
+      --phone-card-alt: #e6eee6;
+      --shadow: 0 12px 32px #34453820;
+    }
+
+    html[data-theme="ocean"] {
+      --page: #0c151d;
+      --panel: #13212b;
+      --panel-raised: #1a2c38;
+      --panel-soft: #101c25;
+      --line: #2a3d49;
+      --text: #e4edf1;
+      --muted: #99abb4;
+      --quiet: #708590;
+      --accent: #58c4d2;
+      --accent-strong: #7bd5df;
+      --accent-ink: #092027;
+      --accent-soft: #183640;
+      --good: #76c9a0;
+      --good-soft: #1b382f;
+      --warn: #e7b968;
+      --danger: #f17e73;
+      --danger-soft: #402522;
+      --phone: #f4f7f8;
+      --phone-text: #1d2b33;
+      --phone-muted: #6c7d85;
+      --phone-card: #fff;
+      --phone-card-alt: #e5eef1;
+      --shadow: 0 18px 46px #0007;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--page); color: var(--text); transition: background .2s, color .2s; }
+    button, select { font: inherit; }
+    button { color: inherit; }
+    .app { min-height: 100vh; display: flex; flex-direction: column; }
+    .topbar { height: 58px; display: flex; align-items: center; gap: 14px; padding: 0 22px; background: var(--panel); border-bottom: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 700; letter-spacing: -.3px; }
+    .brand-mark { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 6px; color: var(--accent-ink); background: var(--accent); font-size: 14px; }
+    .version { color: var(--muted); font-size: 11px; font-weight: 400; }
+    .top-spacer { flex: 1; }
+    .eyebrow { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+    .theme-picker { display: flex; gap: 5px; padding: 4px; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; }
+    .theme-btn { border: 0; padding: 7px 10px; border-radius: 5px; color: var(--muted); background: transparent; cursor: pointer; font-size: 11px; transition: .15s; }
+    .theme-btn:hover { color: var(--text); background: var(--panel-raised); }
+    .theme-btn.active { color: var(--accent-ink); background: var(--accent); font-weight: 650; }
+    .settings-btn { display: flex; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: var(--panel); cursor: pointer; font-size: 11px; }
+    .settings-btn:hover { border-color: var(--accent); color: var(--text); }
+    .workspace { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(340px,1fr) 8px 210px; padding: 12px; }
+    .devices { min-height: 0; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 10px; }
+    .device { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 9px; padding: 11px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+    .device.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent); }
+    .device-head { min-height: 34px; display: flex; align-items: center; gap: 9px; }
+    .device-name { font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .model { min-width: 0; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--good); font-size: 10px; white-space: nowrap; }
+    .status:before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .select-device { padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--panel-raised); font-size: 10px; }
+    .device-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 39px minmax(0,1fr); gap: 9px; }
+    .tools { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px 3px; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; }
+    .tool { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 6px; color: var(--muted); background: transparent; cursor: pointer; font-size: 14px; }
+    .tool:hover { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+    .tool-sep { width: 22px; height: 1px; margin: 3px 0; background: var(--line); }
+    .tool.record { color: var(--danger); }
+    .device-screen-wrap { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 7px; }
+    .screen { flex: 1; min-height: 0; display: grid; place-items: center; overflow: hidden; background: var(--panel-soft); border: 1px solid var(--line); border-radius: 8px; }
+    .phone { width: min(60%, 226px); height: 94%; max-height: 410px; position: relative; overflow: hidden; display: flex; flex-direction: column; padding: 12px 10px 9px; border: 5px solid #454b4d; border-radius: 28px; color: var(--phone-text); background: var(--phone); box-shadow: var(--shadow); }
+    .phone-top { height: 17px; display: flex; justify-content: space-between; font-size: 7px; font-weight: 700; }
+    .phone-notch { position: absolute; top: 0; left: 50%; width: 68px; height: 12px; transform: translateX(-50%); border-radius: 0 0 9px 9px; background: #171a1b; }
+    .phone-title { margin: 16px 0 9px; font-size: 11px; font-weight: 700; }
+    .phone-search { padding: 7px 8px; border-radius: 5px; color: var(--phone-muted); background: var(--phone-card-alt); font-size: 7px; }
+    .phone-feature { margin-top: 10px; padding: 12px 10px; border-radius: 7px; color: var(--accent-ink); background: var(--accent); font-size: 8px; font-weight: 700; }
+    .phone-feature small { display: block; margin-top: 3px; opacity: .8; font-size: 7px; font-weight: 400; }
+    .phone-caption { margin: 13px 0 7px; font-size: 8px; font-weight: 700; }
+    .phone-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .phone-card { min-height: 44px; padding: 8px 7px; border-radius: 6px; background: var(--phone-card); box-shadow: 0 2px 6px #0001; font-size: 7px; }
+    .phone-card b { display: block; margin-bottom: 4px; color: var(--accent); font-size: 10px; }
+    .phone-nav { display: flex; justify-content: space-around; margin: auto -2px 0; padding-top: 9px; color: var(--phone-muted); font-size: 8px; }
+    .device-meta { display: flex; gap: 12px; overflow: hidden; color: var(--muted); font-size: 9px; }
+    .device-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .rec-state { margin-left: auto; color: var(--quiet); font-size: 9px; white-space: nowrap; }
+    .resize { position: relative; cursor: row-resize; }
+    .resize:after { content: ""; position: absolute; top: 3px; left: calc(50% - 22px); width: 44px; height: 2px; border-radius: 2px; background: var(--quiet); }
+    .logs { min-height: 120px; display: flex; flex-direction: column; overflow: hidden; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+    .log-head { min-height: 41px; display: flex; align-items: center; gap: 5px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+    .log-tab { height: 29px; padding: 0 10px; border: 1px solid transparent; border-radius: 6px; color: var(--muted); background: transparent; cursor: pointer; font-size: 10px; }
+    .log-tab.active { color: var(--text); background: var(--panel-raised); border-color: var(--line); }
+    .log-controls { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+    .log-select, .search { height: 27px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--panel-soft); font-size: 9px; }
+    .search { width: 130px; }
+    .filter-chip { height: 27px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: var(--panel-raised); cursor: pointer; font-size: 9px; }
+    .filter-chip.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+    .log-content { flex: 1; min-height: 0; overflow: auto; padding: 9px 11px; background: var(--panel-soft); color: var(--muted); font: 10px/1.7 Consolas, monospace; }
+    .log-line { white-space: nowrap; }
+    .log-time { color: var(--quiet); }
+    .log-device { color: var(--accent); }
+    .log-good { color: var(--good); }
+    .log-warn { color: var(--warn); }
+    .log-error { color: var(--danger); }
+    .footnote { padding: 8px 18px; color: var(--quiet); font-size: 9px; text-align: right; }
+    .toast { position: fixed; right: 18px; bottom: 18px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 7px; color: var(--text); background: var(--panel-raised); box-shadow: var(--shadow); opacity: 0; transform: translateY(5px); transition: .15s; pointer-events: none; font-size: 11px; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    @media (max-width: 760px) {
+      .topbar { padding: 0 10px; gap: 7px; }
+      .version,.eyebrow { display: none; }
+      .theme-btn { padding: 7px 6px; }
+      .settings-btn { padding: 7px; font-size: 0; }
+      .workspace { grid-template-rows: minmax(250px,1fr) 8px 190px; padding: 6px; }
+      .device { padding: 7px; }
+      .device-body { grid-template-columns: 32px minmax(0,1fr); gap: 5px; }
+      .tool { width: 25px; height: 27px; }
+      .select-device { max-width: 84px; padding: 5px; }
+      .phone { width: 75%; }
+      .log-select { max-width: 74px; }
+      .search { width: 74px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">D</span>DroidBridge <span class="version">v1.0.5 · 색상 방향 시안</span></div>
+      <div class="top-spacer"></div>
+      <span class="eyebrow">화면 스타일 선택</span>
+      <nav class="theme-picker" aria-label="색상 스타일 선택">
+        <button class="theme-btn active" data-theme-choice="graphite">01 그래파이트</button>
+        <button class="theme-btn" data-theme-choice="forest">02 포레스트</button>
+        <button class="theme-btn" data-theme-choice="ocean">03 오션</button>
+      </nav>
+      <button class="settings-btn" onclick="toast('프로그램 설정 예시')">⚙ <span>설정</span></button>
+    </header>
+    <main class="workspace">
+      <div class="devices">
+        <section class="device active">
+          <div class="device-head">
+            <span class="device-name">기기 A</span><span class="model">Pixel 8 · Android 15</span>
+            <button class="select-device" onclick="toast('기기 선택 창 예시')">기기 변경</button>
+            <span class="status">연결됨</span>
+          </div>
+          <div class="device-body">
+            <aside class="tools" aria-label="기기 A 도구">
+              <button class="tool" title="뒤로" onclick="toast('뒤로')">‹</button><button class="tool" title="홈" onclick="toast('홈')">⌂</button><button class="tool" title="최근 앱" onclick="toast('최근 앱')">▣</button>
+              <i class="tool-sep"></i><button class="tool" title="Jira" onclick="toast('Jira 등록')">J</button><button class="tool" title="데이터 삭제" onclick="toast('데이터 삭제')">⌫</button><button class="tool" title="앱 정보" onclick="toast('앱 정보')">ⓘ</button><button class="tool" title="설정" onclick="toast('기기 설정')">⚙</button>
+              <i class="tool-sep"></i><button class="tool" title="회전" onclick="toast('화면 회전')">⟳</button><button class="tool" title="캡처" onclick="toast('화면 캡처')">▧</button><button class="tool record" title="녹화" onclick="toast('녹화 시작')">●</button><button class="tool" title="APK 설치" onclick="toast('APK 설치')">⇧</button>
+            </aside>
+            <div class="device-screen-wrap">
+              <div class="screen"><div class="phone">
+                <div class="phone-top"><span>9:41</span><span>◆ ▮ ▰</span></div><i class="phone-notch"></i>
+                <div class="phone-title">안녕하세요</div><div class="phone-search">⌕ 무엇을 찾으세요?</div>
+                <div class="phone-feature">오늘의 추천<small>새로운 기능을 확인해 보세요</small></div>
+                <div class="phone-caption">내 서비스</div>
+                <div class="phone-cards"><div class="phone-card"><b>▣</b>주문 내역</div><div class="phone-card"><b>♡</b>관심 목록</div><div class="phone-card"><b>◇</b>쿠폰</div><div class="phone-card"><b>⚙</b>설정</div></div>
+                <div class="phone-nav">⌂　⌕　♡　☻</div>
+              </div></div>
+              <div class="device-meta"><span>com.sample.shop</span><span>1080 × 2400</span><span class="rec-state">녹화 대기</span></div>
+            </div>
+          </div>
+        </section>
+        <section class="device">
+          <div class="device-head">
+            <span class="device-name">기기 B</span><span class="model">Galaxy S23 · Android 14</span>
+            <button class="select-device" onclick="toast('기기 선택 창 예시')">기기 변경</button>
+            <span class="status">연결됨</span>
+          </div>
+          <div class="device-body">
+            <aside class="tools" aria-label="기기 B 도구">
+              <button class="tool" title="뒤로" onclick="toast('뒤로')">‹</button><button class="tool" title="홈" onclick="toast('홈')">⌂</button><button class="tool" title="최근 앱" onclick="toast('최근 앱')">▣</button>
+              <i class="tool-sep"></i><button class="tool" title="Jira" onclick="toast('Jira 등록')">J</button><button class="tool" title="데이터 삭제" onclick="toast('데이터 삭제')">⌫</button><button class="tool" title="앱 정보" onclick="toast('앱 정보')">ⓘ</button><button class="tool" title="설정" onclick="toast('기기 설정')">⚙</button>
+              <i class="tool-sep"></i><button class="tool" title="회전" onclick="toast('화면 회전')">⟳</button><button class="tool" title="캡처" onclick="toast('화면 캡처')">▧</button><button class="tool record" title="녹화" onclick="toast('녹화 시작')">●</button><button class="tool" title="APK 설치" onclick="toast('APK 설치')">⇧</button>
+            </aside>
+            <div class="device-screen-wrap">
+              <div class="screen"><div class="phone">
+                <div class="phone-top"><span>9:41</span><span>◆ ▮ ▰</span></div><i class="phone-notch"></i>
+                <div class="phone-title">안녕하세요</div><div class="phone-search">⌕ 무엇을 찾으세요?</div>
+                <div class="phone-feature">오늘의 추천<small>새로운 기능을 확인해 보세요</small></div>
+                <div class="phone-caption">내 서비스</div>
+                <div class="phone-cards"><div class="phone-card"><b>▣</b>주문 내역</div><div class="phone-card"><b>♡</b>관심 목록</div><div class="phone-card"><b>◇</b>쿠폰</div><div class="phone-card"><b>⚙</b>설정</div></div>
+                <div class="phone-nav">⌂　⌕　♡　☻</div>
+              </div></div>
+              <div class="device-meta"><span>com.sample.shop</span><span>1080 × 2340</span><span class="rec-state">녹화 대기</span></div>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div class="resize" title="드래그하여 로그 영역 크기 조절"></div>
+      <section class="logs">
+        <header class="log-head">
+          <button class="log-tab" onclick="setLogTab(this)">미러링 로그</button><button class="log-tab active" onclick="setLogTab(this)">기기 로그</button>
+          <div class="log-controls">
+            <select class="log-select" aria-label="기기 선택"><option>두 기기</option><option>기기 A</option><option>기기 B</option></select>
+            <select class="log-select" aria-label="로그 레벨"><option>전체 레벨</option><option>경고 이상</option><option>오류만</option></select>
+            <button class="filter-chip active" onclick="this.classList.toggle('active')">현재 앱</button>
+            <input class="search" placeholder="로그 검색" aria-label="로그 검색">
+            <button class="tool" title="복사" onclick="toast('로그를 복사했습니다')">▣</button>
+          </div>
+        </header>
+        <div class="log-content">
+          <div class="log-line"><span class="log-time">11:20:01.112</span>　<span class="log-device">[Pixel 8]</span> ActivityManager: Displayed com.sample.shop/.MainActivity</div>
+          <div class="log-line"><span class="log-time">11:20:01.245</span>　<span class="log-device">[Galaxy S23]</span> ActivityManager: Displayed com.sample.shop/.MainActivity</div>
+          <div class="log-line"><span class="log-time">11:20:02.103</span>　<span class="log-device">[Pixel 8]</span> InputMethodManager: showSoftInput requested</div>
+          <div class="log-line"><span class="log-time">11:20:03.021</span>　<span class="log-device">[Pixel 8]</span> OkHttp: response 200 GET /api/home</div>
+          <div class="log-line"><span class="log-time">11:20:03.294</span>　<span class="log-device">[Galaxy S23]</span> Network: retrying request (attempt 2)</div>
+          <div class="log-line"><span class="log-time">11:20:04.510</span>　<span class="log-device">[Galaxy S23]</span> <span class="log-error">FATAL EXCEPTION: main — NullPointerException</span></div>
+        </div>
+      </section>
+    </main>
+    <footer class="footnote">색상·버튼 반응 비교용 시안 · 가상 기기 화면이며 실제 기기에 연결되지 않습니다</footer>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script>
+    const themeButtons = [...document.querySelectorAll('[data-theme-choice]')]
+    themeButtons.forEach(button => button.addEventListener('click', () => {
+      document.documentElement.dataset.theme = button.dataset.themeChoice
+      themeButtons.forEach(item => item.classList.toggle('active', item === button))
+    }))
+    function toast(message) {
+      const el = document.getElementById('toast')
+      el.textContent = message
+      el.classList.add('show')
+      clearTimeout(window.toastTimer)
+      window.toastTimer = setTimeout(() => el.classList.remove('show'), 1500)
+    }
+    function setLogTab(button) {
+      document.querySelectorAll('.log-tab').forEach(item => item.classList.toggle('active', item === button))
+    }
+  </script>
+</body>
+</html>

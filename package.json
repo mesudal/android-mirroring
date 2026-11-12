@@ -1,12 +1,12 @@
 {
   "name": "droidbridge",
-  "version": "1.0.3",
+  "version": "1.2.18",
   "description": "Android control center powered by scrcpy",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "check": "node --check public/renderer.js && node src/jira.js && node src/hid-keyboard.js && node src/mirror-bridge.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check public/renderer.js && node src/jira.js && node src/hid-keyboard.js && node src/mirror-bridge.js && node src/qa-xml.js && node src/qa-driver.js && node src/qa-apps.js && node src/apk-info.js && node src/qa-checklist.js && node src/qa-scenario.js && node src/qa-results.js && node src/qa-runner.js && node src/win-elevation.js",
     "build:win": "electron-builder --win --publish never",
     "build:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never",
     "build:linux": "electron-builder --linux --publish never",
@@ -27,6 +27,7 @@
       "**/*",
       "!dist*/**",
       "!bin/**",
+      "!build-assets/**",
       "!docs/**",
       "!.omc/**",
       "!.notarize.env",
@@ -42,6 +43,7 @@
       }
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": "nsis"
     },
     "nsis": {
@@ -52,6 +54,7 @@
       "shortcutName": "안드로이드 미러링"
     },
     "mac": {
+      "icon": "build/icon.icns",
       "target": {
         "target": "dmg",
         "arch": [
@@ -65,6 +68,7 @@
       }
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": "AppImage"
     },
     "publish": {

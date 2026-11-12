@@ -11,6 +11,152 @@
 </head>
 
 <body>
+  <header class="dual-topbar">
+    <div class="logo"><span class="logo-dot"></span>DroidBridge</div>
+    <div class="nav-spacer"></div>
+    <button class="btn-sm" onclick="openToolPage('qa')" title="QA 자동 진행·체크리스트·결과"><i class="ti ti-checklist"></i>QA</button>
+    <button class="btn-sm" onclick="openToolPage('settings')" title="Jira·녹화·테마·업데이트 설정"><i class="ti ti-settings"></i>설정</button>
+    <span class="topbar-sep"></span>
+    <button class="btn-sm" id="alwaysOnTopButton" onclick="toggleAlwaysOnTop()" aria-pressed="false"
+      title="항상 위 고정"><i class="ti ti-pin"></i>항상 위</button>
+    <button class="btn-sm" id="deviceAddButton" onclick="addDevicePanel()">
+      <i class="ti ti-device-plus"></i>기기 추가
+    </button>
+  </header>
+  <main class="dual-workspace">
+    <section class="device-panel active" data-slot="A">
+      <header class="device-panel-head">
+        <strong>기기 A</strong><span class="device-model" data-role="slotModel">연결할 기기 선택</span>
+        <button class="qa-app-badge" data-role="qaAppBadge" onclick="activateSlot('A');openQaAppPicker()" title="QA 대상 앱 변경" hidden></button>
+        <button class="btn-sm" onclick="activateSlot('A');openConnectModal()"><i class="ti ti-plug"></i>기기 선택</button>
+        <button class="btn-sm slot-disconnect" data-role="slotDisconnectButton" onclick="activateSlot('A');disconnectDevice()" title="기기 연결 해제" hidden>
+          <i class="ti ti-plug-off"></i>
+        </button>
+        <span class="device-status" data-role="slotStatus">미연결</span>
+      </header>
+      <div class="device-panel-body">
+        <aside class="device-side-tools">
+          <!-- 조작 -->
+          <button onclick="activateSlot('A');keyevent(4)" title="뒤로 가기 (Android 뒤로 버튼)"><i class="ti ti-arrow-back-up"></i><span>뒤로</span></button>
+          <button onclick="activateSlot('A');keyevent(3)" title="홈 화면"><i class="ti ti-home"></i><span>홈</span></button>
+          <button onclick="activateSlot('A');keyevent(187)" title="최근 앱 목록"><i class="ti ti-stack-2"></i><span>최근 앱</span></button>
+          <button onclick="activateSlot('A');rotateView(-1)" title="미러링 화면을 왼쪽으로 돌려 보기 (기기는 그대로)"><i class="ti ti-rotate-2"></i><span>회전</span></button>
+          <button data-role="screenPowerButton" onclick="activateSlot('A');toggleDeviceScreen()" aria-pressed="false" title="스마트폰 화면 끄기 (미러링은 계속)"><i class="ti ti-device-mobile"></i><span>화면 끄기</span></button>
+          <span class="side-divider"></span>
+          <!-- 기록 -->
+          <button onclick="activateSlot('A');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i><span>캡처</span></button>
+          <button class="side-record" data-role="recordButton" onclick="activateSlot('A');toggleRecord()" title="화면 녹화 시작"><i class="ti ti-player-record"></i><span>녹화</span></button>
+          <span class="side-divider"></span>
+          <!-- 앱 -->
+          <button onclick="activateSlot('A');openApkPicker()" title="APK 파일 설치 (화면에 끌어다 놓아도 됩니다)"><i class="ti ti-package-import"></i><span>APK 설치</span></button>
+          <button onclick="activateSlot('A');appAction('settings')" title="지금 보이는 앱의 Android 앱 정보 화면 열기"><i class="ti ti-info-circle"></i><span>앱 정보</span></button>
+          <button onclick="activateSlot('A');appAction('clear')" title="지금 보이는 앱의 데이터 삭제 (처음 설치 상태로)"><i class="ti ti-trash-x"></i><span>데이터 삭제</span></button>
+          <span class="side-divider"></span>
+          <!-- QA -->
+          <button data-role="qaAppButton" onclick="activateSlot('A');openQaAppPicker()" title="QA 대상 앱·타입 선택, 업데이트 테스트 APK"><i class="ti ti-target"></i><span>QA 앱</span></button>
+          <button onclick="activateSlot('A');openJiraModal()" title="Jira 버그 티켓 발행 (화면·로그 첨부)"><i class="ti ti-bug"></i><span>버그 등록</span></button>
+        </aside>
+        <div class="device-view">
+          <div class="phone-screen" data-role="phoneScreen" data-slot="A"
+            ondragover="event.preventDefault();this.classList.add('apk-drop')"
+            ondragleave="this.classList.remove('apk-drop')" ondrop="activateSlot('A');handleMirrorDrop(event)">
+            <i class="ti ti-device-mobile-off" data-role="phoneIcon"></i>
+            <p data-role="phoneMsg">기기를 연결해 주세요</p>
+          </div>
+          <div class="screen-brightness" data-role="screenBrightness" hidden>
+            <i class="ti ti-sun-low" aria-hidden="true"></i>
+            <input type="range" min="25" max="200" value="100" aria-label="PC 미러링 화면 밝기"
+              title="PC 미러링 화면 밝기만 조절합니다. 스마트폰 화면에는 영향을 주지 않습니다."
+              oninput="setScreenBrightness('A',this.value)">
+            <output data-role="screenBrightnessValue">100%</output>
+            <i class="ti ti-sun-high" aria-hidden="true"></i>
+          </div>
+          <div class="device-info-strip"><span data-role="appPkg">—</span><span data-role="appVer"></span><span data-role="slotActivity">—</span></div>
+          <div class="record-status-strip" data-role="recordStatus">기기를 연결하면 녹화할 수 있습니다</div>
+        </div>
+      </div>
+    </section>
+    <section class="device-panel" data-slot="B">
+      <header class="device-panel-head">
+        <strong>기기 B</strong><span class="device-model" data-role="slotModel">연결할 기기 선택</span>
+        <button class="qa-app-badge" data-role="qaAppBadge" onclick="activateSlot('B');openQaAppPicker()" title="QA 대상 앱 변경" hidden></button>
+        <button class="btn-sm" onclick="activateSlot('B');openConnectModal()"><i class="ti ti-plug"></i>기기 선택</button>
+        <button class="btn-sm slot-disconnect" data-role="slotDisconnectButton" onclick="activateSlot('B');disconnectDevice()" title="기기 연결 해제" hidden>
+          <i class="ti ti-plug-off"></i>
+        </button>
+        <span class="device-status" data-role="slotStatus">미연결</span>
+      </header>
+      <div class="device-panel-body">
+        <aside class="device-side-tools">
+          <!-- 조작 -->
+          <button onclick="activateSlot('B');keyevent(4)" title="뒤로 가기 (Android 뒤로 버튼)"><i class="ti ti-arrow-back-up"></i><span>뒤로</span></button>
+          <button onclick="activateSlot('B');keyevent(3)" title="홈 화면"><i class="ti ti-home"></i><span>홈</span></button>
+          <button onclick="activateSlot('B');keyevent(187)" title="최근 앱 목록"><i class="ti ti-stack-2"></i><span>최근 앱</span></button>
+          <button onclick="activateSlot('B');rotateView(-1)" title="미러링 화면을 왼쪽으로 돌려 보기 (기기는 그대로)"><i class="ti ti-rotate-2"></i><span>회전</span></button>
+          <button data-role="screenPowerButton" onclick="activateSlot('B');toggleDeviceScreen()" aria-pressed="false" title="스마트폰 화면 끄기 (미러링은 계속)"><i class="ti ti-device-mobile"></i><span>화면 끄기</span></button>
+          <span class="side-divider"></span>
+          <!-- 기록 -->
+          <button onclick="activateSlot('B');takeScreenshot()" title="화면 캡처"><i class="ti ti-camera"></i><span>캡처</span></button>
+          <button class="side-record" data-role="recordButton" onclick="activateSlot('B');toggleRecord()" title="화면 녹화 시작"><i class="ti ti-player-record"></i><span>녹화</span></button>
+          <span class="side-divider"></span>
+          <!-- 앱 -->
+          <button onclick="activateSlot('B');openApkPicker()" title="APK 파일 설치 (화면에 끌어다 놓아도 됩니다)"><i class="ti ti-package-import"></i><span>APK 설치</span></button>
+          <button onclick="activateSlot('B');appAction('settings')" title="지금 보이는 앱의 Android 앱 정보 화면 열기"><i class="ti ti-info-circle"></i><span>앱 정보</span></button>
+          <button onclick="activateSlot('B');appAction('clear')" title="지금 보이는 앱의 데이터 삭제 (처음 설치 상태로)"><i class="ti ti-trash-x"></i><span>데이터 삭제</span></button>
+          <span class="side-divider"></span>
+          <!-- QA -->
+          <button data-role="qaAppButton" onclick="activateSlot('B');openQaAppPicker()" title="QA 대상 앱·타입 선택, 업데이트 테스트 APK"><i class="ti ti-target"></i><span>QA 앱</span></button>
+          <button onclick="activateSlot('B');openJiraModal()" title="Jira 버그 티켓 발행 (화면·로그 첨부)"><i class="ti ti-bug"></i><span>버그 등록</span></button>
+        </aside>
+        <div class="device-view">
+          <div class="phone-screen" data-role="phoneScreen" data-slot="B"
+            ondragover="event.preventDefault();this.classList.add('apk-drop')"
+            ondragleave="this.classList.remove('apk-drop')" ondrop="activateSlot('B');handleMirrorDrop(event)">
+            <i class="ti ti-device-mobile-off" data-role="phoneIcon"></i>
+            <p data-role="phoneMsg">기기를 연결해 주세요</p>
+          </div>
+          <div class="screen-brightness" data-role="screenBrightness" hidden>
+            <i class="ti ti-sun-low" aria-hidden="true"></i>
+            <input type="range" min="25" max="200" value="100" aria-label="PC 미러링 화면 밝기"
+              title="PC 미러링 화면 밝기만 조절합니다. 스마트폰 화면에는 영향을 주지 않습니다."
+              oninput="setScreenBrightness('B',this.value)">
+            <output data-role="screenBrightnessValue">100%</output>
+            <i class="ti ti-sun-high" aria-hidden="true"></i>
+          </div>
+          <div class="device-info-strip"><span data-role="appPkg">—</span><span data-role="appVer"></span><span data-role="slotActivity">—</span></div>
+          <div class="record-status-strip" data-role="recordStatus">기기를 연결하면 녹화할 수 있습니다</div>
+        </div>
+      </div>
+    </section>
+    <div class="dual-log-resize" id="dualLogResize" title="드래그하여 로그 영역 크기 조절"></div>
+    <section class="dual-log-panel">
+      <div class="dual-log-tabs">
+        <button class="active" id="mirrorLogTab" onclick="showDualLogTab('mirror')">미러링 로그</button>
+        <button id="allLogTab" onclick="showDualLogTab('all')">전체 로그</button>
+        <div class="dual-log-controls" id="allLogControls">
+          <button class="btn-sm" id="logFilterBtn" onclick="toggleAppLogFilter()"
+            title="현재 포그라운드 앱의 로그만 보기"><i class="ti ti-filter"></i>현재 앱만</button>
+          <select id="dualLogDevice" onchange="setDualLogDevice(this.value)">
+            <option value="all">전체 기기</option><option value="A">기기 A</option><option value="B">기기 B</option>
+            <option value="C">기기 C</option>
+          </select>
+          <select id="logcatLevel" class="logcat-level" onchange="setLogcatLevel(this.value)">
+            <option value="0">전체</option><option value="1">Debug 이상</option><option value="2">Info 이상</option><option value="3">Warn 이상</option><option value="4">Error 만</option>
+          </select>
+          <select id="logcatPreset" class="logcat-level" onchange="setLogcatPreset(this.value)">
+            <option value="">필터 없음</option><option value="http">HTTP 통신</option><option value="crash">예외 · 크래시 · ANR</option>
+          </select>
+          <input id="logcatFilter" class="logcat-filter" placeholder="로그 검색" oninput="renderLogcat()">
+          <button class="btn-icon" onclick="saveLogcat()" title="로그 저장"><i class="ti ti-download"></i></button>
+          <button class="btn-icon" onclick="clearLogcat()" title="로그 지우기"><i class="ti ti-trash"></i></button>
+          <button class="btn-icon" id="logcatToggle" onclick="toggleLogcat()" title="LogCat 시작/중지"><i class="ti ti-player-play"></i></button>
+        </div>
+      </div>
+      <pre class="dual-log-body" id="scrcpyLog"></pre>
+      <pre class="logcat-body" id="logcatBody" style="display:none"></pre>
+    </section>
+  </main>
+  <div class="dual-toast" id="dualToast"></div>
   <!-- 상단 nav 와 좌측 사이드바는 제거했다. 도구 전환은 우측 패널의 탭이 대신하고,
        기기 연결은 우측 '미러링' 탭의 버튼으로 한다. -->
   <div class="layout">
@@ -113,6 +259,7 @@
       </button>
       <div class="tool-tabs">
         <div class="tool-tab active" onclick="switchPage('mirror',this)"><i class="ti ti-device-mobile"></i>미러링</div>
+        <div class="tool-tab" onclick="switchPage('qa',this);loadQaSetup()"><i class="ti ti-checklist"></i>QA</div>
         <!-- APK 탭은 미러링 탭의 'APK 설치' 버튼으로 옮겼다.
              클립보드 탭은 양방향 자동 동기화로 대체할 예정이라 내렸다 (docs/TODO.md 참고). -->
         <!-- 패킷 탭 — 기능은 살아 있고 화면에만 노출하지 않는다 -->
@@ -192,6 +339,165 @@
           -->
         </div>
 
+        <!-- QA 자동화 기반: 기기별 앱 선택과 현재 UI 접근성 요소 확인 -->
+        <div class="page" id="page-qa">
+          <!-- QA 탭은 좁은 패널이라 세 칸으로 나눈다: 실행(매번) · 준비(처음 한 번·가끔) · 화면 도구(시나리오 작성용) -->
+          <div class="qa-head">
+            <select id="qaAppSelect" class="settings-input" aria-label="QA 대상 앱 선택" onchange="selectQaApp(this.value)"></select>
+          </div>
+          <div class="qa-seg" role="tablist" aria-label="QA 화면">
+            <button type="button" class="qa-seg-btn active" data-qa-sec="run" role="tab" onclick="showQaSection('run')"><i class="ti ti-player-play"></i>실행</button>
+            <button type="button" class="qa-seg-btn" data-qa-sec="prep" role="tab" onclick="showQaSection('prep')"><i class="ti ti-adjustments"></i>준비</button>
+            <button type="button" class="qa-seg-btn" data-qa-sec="tools" role="tab" onclick="showQaSection('tools')"><i class="ti ti-scan"></i>화면 도구</button>
+          </div>
+
+          <!-- ── 실행 ── -->
+          <div class="qa-sec" id="qaSecRun">
+            <!-- 준비 상태 요약 — 빠진 것이 있으면 줄을 눌러 준비 칸으로 간다 -->
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">준비 상태</div>
+              <div class="qa-ready" id="qaReadyList"></div>
+            </div>
+            <div class="ctrl-card qa-card qa-run-card">
+              <div class="ctrl-title">자동 QA 실행</div>
+              <select id="qaRunScope" class="settings-input" aria-label="실행 범위" onchange="onQaRunOptionChange()">
+                <option value="default">지난 Fail·Blocked + 자동 항목 전체 (기본)</option>
+                <option value="failed">지난 Fail·Blocked 만 (수정 확인)</option>
+                <option value="all">전체 항목</option>
+                <option value="custom">직접 고른 항목</option>
+              </select>
+              <label class="qa-check"><input type="checkbox" id="qaRunUpdate" onchange="onQaRunOptionChange()">
+                업데이트 테스트로 실행 <span class="qa-hint">기존 버전 → 업데이트</span></label>
+              <details class="qa-more">
+                <summary>세부 옵션</summary>
+                <label class="qa-field-label" for="qaKeepPriority">지난 Pass 인 사람 판정 항목</label>
+                <select id="qaKeepPriority" class="settings-input" onchange="onQaRunOptionChange()">
+                  <option value="">빼기</option>
+                  <option value="5">중요도 5 는 포함</option>
+                  <option value="4">중요도 4 이상은 포함</option>
+                </select>
+                <label class="qa-check"><input type="checkbox" id="qaManualUnscripted" checked onchange="onQaRunOptionChange()">
+                  시나리오 없는 항목은 사람이 판정</label>
+              </details>
+              <div class="qa-auto-info" id="qaRunPreview">—</div>
+              <div class="qa-auto-actions">
+                <button class="btn-sm primary" id="qaRunBtn" onclick="startQaRun()"><i class="ti ti-player-play"></i>실행</button>
+                <button class="btn-sm" id="qaStopBtn" onclick="stopQaRun()" disabled><i class="ti ti-player-stop"></i>중단</button>
+                <button class="btn-sm" onclick="openQaResults()"><i class="ti ti-report-analytics"></i>결과</button>
+              </div>
+              <div class="qa-run-progress" id="qaRunProgress" hidden>
+                <div class="qa-run-bar"><div id="qaRunBar"></div></div>
+                <div class="qa-auto-info" id="qaRunNow"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── 준비 ── -->
+          <div class="qa-sec" id="qaSecPrep" hidden>
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">1. 체크리스트</div>
+              <div class="qa-auto-info" id="qaChecklistInfo">가져온 체크리스트가 없습니다</div>
+              <div class="qa-auto-actions">
+                <button class="btn-sm" onclick="importQaChecklist()" title="구글 시트 → 파일 → 다운로드 → CSV 로 받은 파일">
+                  <i class="ti ti-file-import"></i>CSV 가져오기</button>
+                <button class="btn-sm" onclick="openQaChecklist()"><i class="ti ti-list-check"></i>항목 보기</button>
+              </div>
+            </div>
+
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">2. 기기와 계정
+                <button class="link-btn" style="float:right" onclick="openQaAccounts()"><i class="ti ti-user-cog"></i>계정 관리</button>
+              </div>
+              <div class="qa-role-list" id="qaRoleList">
+                <div class="qa-role-card" data-qa-role="A">
+                  <div class="qa-role-title">A · 시험 대상</div>
+                  <select class="settings-input qa-device-select" aria-label="역할 A 기기 선택"></select>
+                  <select class="settings-input qa-package-select" aria-label="역할 A 앱 타입" disabled>
+                    <option value="">기기를 먼저 선택하세요</option>
+                  </select>
+                  <select class="settings-input qa-account-select" aria-label="역할 A 테스트 계정" onchange="saveQaRoleAccount('A', this.value)"></select>
+                </div>
+                <!-- 상대 기기는 여러 대가 필요한 항목(송수신·1:1 등)에서만 쓴다 — 평소엔 접어 둔다 -->
+                <details class="qa-more qa-role-more" id="qaRoleMore">
+                  <summary>상대 기기 B · C <span class="qa-hint" id="qaRoleMoreHint"></span></summary>
+                  <div class="qa-role-card" data-qa-role="B">
+                    <div class="qa-role-title">B · 상대 기기</div>
+                    <select class="settings-input qa-device-select" aria-label="역할 B 기기 선택"></select>
+                    <select class="settings-input qa-package-select" aria-label="역할 B 앱 타입" disabled>
+                      <option value="">기기를 먼저 선택하세요</option>
+                    </select>
+                    <select class="settings-input qa-account-select" aria-label="역할 B 테스트 계정" onchange="saveQaRoleAccount('B', this.value)"></select>
+                  </div>
+                  <div class="qa-role-card" data-qa-role="C">
+                    <div class="qa-role-title">C · 추가 상대 기기</div>
+                    <select class="settings-input qa-device-select" aria-label="역할 C 기기 선택"></select>
+                    <select class="settings-input qa-package-select" aria-label="역할 C 앱 타입" disabled>
+                      <option value="">기기를 먼저 선택하세요</option>
+                    </select>
+                    <select class="settings-input qa-account-select" aria-label="역할 C 테스트 계정" onchange="saveQaRoleAccount('C', this.value)"></select>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <!-- 업데이트 테스트용 APK — 역할 A 의 앱 타입 기준. 기기 화면 왼쪽 메뉴의 앱 선택 창과 같은 내용이다 -->
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">3. 업데이트 테스트 APK <span class="qa-hint">필요할 때만</span></div>
+              <div class="qa-prep-apk" id="qaPrepApk"></div>
+            </div>
+
+            <div class="ctrl-card qa-card">
+              <div class="ctrl-title">4. 시나리오</div>
+              <div class="qa-auto-info" id="qaScenarioInfo"></div>
+              <div class="qa-auto-actions">
+                <button class="btn-sm" onclick="openQaScenarioFolder()" title="시나리오(JSON)를 추가하는 폴더 열기">
+                  <i class="ti ti-folder"></i>시나리오 폴더</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── 화면 도구 — 시나리오를 쓸 때 셀렉터(글자·ID)를 찾는 용도 ── -->
+          <div class="qa-sec" id="qaSecTools" hidden>
+            <div class="ctrl-card qa-card qa-inspect-card">
+              <div class="qa-auto-info" style="margin:0 0 6px">시나리오를 쓸 때 버튼 글자·ID 를 찾는 도구입니다.</div>
+              <div class="qa-inspect-controls">
+                <select id="qaInspectRole" class="settings-input" aria-label="화면을 볼 역할">
+                  <option value="A">역할 A</option>
+                  <option value="B">역할 B</option>
+                  <option value="C">역할 C</option>
+                </select>
+                <button class="btn-sm primary" id="qaInspectButton" onclick="inspectQaScreen()">
+                  <i class="ti ti-scan"></i>현재 화면 조회
+                </button>
+              </div>
+              <!-- 글자로 누르기 — 화면을 다시 읽어 그 글자의 요소를 찾아 누른다 (시나리오의 tap 과 같은 경로) -->
+              <div class="qa-tap-text">
+                <input id="qaTapText" class="settings-input" placeholder="누를 버튼 글자 (예: 확인)" spellcheck="false"
+                  aria-label="누를 버튼 글자" onkeydown="if(event.key==='Enter')tapQaByText()">
+                <button class="btn-sm" id="qaTapTextButton" onclick="tapQaByText()">
+                  <i class="ti ti-hand-finger"></i>누르기
+                </button>
+              </div>
+              <div class="qa-status" id="qaStatus" role="status">기기와 앱을 선택해 주세요</div>
+              <input id="qaElementFilter" class="settings-input" placeholder="요소 글자·설명·ID 검색"
+                oninput="renderQaElements()">
+              <div class="qa-element-list" id="qaElementList">
+                <div class="qa-empty">현재 화면을 조회하면 요소 목록이 표시됩니다.</div>
+              </div>
+              <div class="qa-selected">
+                <span id="qaSelectedLabel">선택된 요소 없음</span>
+                <button class="btn-sm" id="qaTapButton" onclick="tapQaElement()" disabled>
+                  <i class="ti ti-hand-click"></i>선택 요소 탭
+                </button>
+              </div>
+              <details class="qa-xml-details">
+                <summary>화면 구조 XML 원문</summary>
+                <pre id="qaXmlSource"></pre>
+              </details>
+            </div>
+          </div>
+        </div>
+
       <!-- 화면 캡처 -->
       <!-- 캡처·녹화 탭은 없앴다. 두 기능은 미러링 탭의 버튼으로 옮겼고,
            녹화 설정(비트레이트/해상도)은 설정 탭으로 옮겼다. -->
@@ -225,6 +531,20 @@
       <!-- 설정 -->
       <div class="page" id="page-settings">
         <div style="max-width:520px;display:flex;flex-direction:column;gap:12px">
+          <div class="ctrl-card">
+            <div class="ctrl-title">화면 테마</div>
+            <div class="info-rows">
+              <div class="info-row">
+                <label for="themeSelect" style="color:var(--muted)">앱 색상</label>
+                <select id="themeSelect" class="settings-input theme-select" onchange="setTheme(this.value)">
+                  <option value="forest">포레스트 · 밝고 차분한 녹색</option>
+                  <option value="graphite">그래파이트 · 어두운 앰버</option>
+                  <option value="ocean">오션 · 딥 네이비와 시안</option>
+                </select>
+              </div>
+              <p class="theme-help">선택하면 바로 적용되며 다음 실행에도 유지됩니다.</p>
+            </div>
+          </div>
           <!-- 미러링 탭에서 옮겨 왔다. 지금 연결된 기기에 바로 적용되는 값이다. -->
           <div class="ctrl-card">
             <div class="ctrl-title">화질 설정</div>
@@ -520,6 +840,28 @@
         <!-- 이슈 타입은 등록할 때마다 고르므로 여기서는 받지 않는다 -->
       </div>
 
+      <!-- 스프린트 — 발행한 티켓을 어느 스프린트에 넣을지. 프로젝트와 같이 연결이 확인된 뒤에 보인다.
+           '진행 중' 은 발행할 때마다 그 보드의 현재 스프린트를 찾으므로 스프린트가 바뀌어도 다시 고를 필요가 없다. -->
+      <div id="jiraSprintRow" style="display:none">
+        <div class="jira-field">
+          <label for="jiraSprintMode">스프린트</label>
+          <select id="jiraSprintMode" class="modal-input" onchange="onJiraSprintModeChange()">
+            <option value="off">지정 안 함 (백로그에 둠)</option>
+            <option value="active">항상 진행 중인 스프린트</option>
+            <option value="fixed">특정 스프린트 지정</option>
+          </select>
+        </div>
+        <div class="jira-field" id="jiraBoardField" style="display:none">
+          <label for="jiraBoard">보드</label>
+          <select id="jiraBoard" class="modal-input" onchange="onJiraBoardChange()"></select>
+        </div>
+        <div class="jira-field" id="jiraSprintField" style="display:none">
+          <label for="jiraSprint">스프린트 선택</label>
+          <select id="jiraSprint" class="modal-input"></select>
+        </div>
+        <small class="jira-sprint-hint" id="jiraSprintHint"></small>
+      </div>
+
       <div style="display:flex;gap:10px;margin-top:6px">
         <button class="btn-primary" style="flex:1;justify-content:center" onclick="saveJiraConfig()">
           <i class="ti ti-device-floppy"></i>저장
@@ -619,6 +961,108 @@
     </div>
   </div>
 
+  <!-- QA 대상 앱 선택 — 기기 화면 왼쪽 메뉴에서 연다. 앱은 공통, 타입(무료용 등)은 기기마다 고른다 -->
+  <div class="overlay" id="qaAppOverlay" onclick="if(event.target===this) closeQaAppPicker()">
+    <div class="modal" style="width:440px;max-width:92vw">
+      <h2>QA 대상 앱</h2>
+      <p id="qaAppPickerDevice">—</p>
+      <div class="qa-app-options" id="qaAppOptions" role="radiogroup" aria-label="앱"></div>
+      <div class="qa-variant-list" id="qaVariantList"></div>
+      <!-- 업데이트 테스트 — 고른 타입에 기존 버전·업데이트 APK 를 등록하고, 이 기기에 ① 기존 버전 설치 → ② 업데이트 설치 -->
+      <div class="qa-apk-section" id="qaApkSection" hidden></div>
+      <div class="qa-picker-actions">
+        <button class="btn-sm" onclick="clearQaVariantFromPicker()"><i class="ti ti-x"></i>선택 해제</button>
+        <button class="btn-sm" onclick="openQaTabFromPicker()"><i class="ti ti-checklist"></i>QA 탭 열기</button>
+      </div>
+      <button class="btn-outline" style="margin-top:8px" onclick="closeQaAppPicker()">닫기</button>
+    </div>
+  </div>
+
+  <!-- QA 체크리스트 항목 — '직접 고른 항목' 범위를 여기서 정한다 -->
+  <div class="overlay" id="qaChecklistOverlay" onclick="if(event.target===this) closeQaChecklist()">
+    <div class="modal qa-wide-modal">
+      <h2>체크리스트 항목</h2>
+      <p id="qaChecklistHead">—</p>
+      <div class="qa-table-tools">
+        <input id="qaChecklistFilter" class="settings-input" placeholder="ID·분류·제목 검색" oninput="renderQaChecklist()">
+        <select id="qaChecklistShow" class="settings-input" onchange="renderQaChecklist()">
+          <option value="">전체</option>
+          <option value="auto">자동 시나리오 있음</option>
+          <option value="noscenario">시나리오 없음</option>
+          <option value="failed">최근 Fail·Blocked</option>
+        </select>
+      </div>
+      <div class="qa-table-wrap"><table class="qa-table" id="qaChecklistTable"></table></div>
+      <div class="qa-modal-actions">
+        <span class="qa-auto-info" id="qaPickedInfo"></span>
+        <button class="btn-sm" onclick="pickQaChecklist(true)">보이는 항목 모두 선택</button>
+        <button class="btn-sm" onclick="pickQaChecklist(false)">선택 해제</button>
+        <button class="btn-sm primary" onclick="useQaPicked()">고른 항목으로 실행 범위 지정</button>
+        <button class="btn-sm" onclick="closeQaChecklist()">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- QA 실행 결과 — 회차별 기록, 지난 회차와의 변화(수정 확인·회귀), 증거, Jira -->
+  <div class="overlay" id="qaResultOverlay" onclick="if(event.target===this) closeQaResults()">
+    <div class="modal qa-wide-modal">
+      <h2>QA 실행 결과</h2>
+      <div class="qa-table-tools">
+        <select id="qaRunSelect" class="settings-input" onchange="loadQaRunDetail(this.value)"></select>
+        <select id="qaResultShow" class="settings-input" onchange="renderQaResults()">
+          <option value="">전체</option>
+          <option value="bad">Fail·Blocked</option>
+          <option value="regression">회귀 (지난 Pass → 이번 Fail)</option>
+          <option value="fixed">수정 확인 (지난 Fail → 이번 Pass)</option>
+          <option value="before">업데이트 전 단계</option>
+        </select>
+      </div>
+      <p class="qa-result-head" id="qaResultHead">—</p>
+      <div class="qa-table-wrap"><table class="qa-table" id="qaResultTable"></table></div>
+      <div class="qa-modal-actions">
+        <button class="btn-sm" onclick="exportQaRun()"><i class="ti ti-file-export"></i>시트용 CSV 내보내기</button>
+        <button class="btn-sm" onclick="openQaRunFolder()"><i class="ti ti-folder"></i>기록 폴더</button>
+        <button class="btn-sm" onclick="closeQaResults()">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 사람 판정 / 확인 요청 — 실행은 응답이 올 때까지 기다린다 -->
+  <div class="overlay" id="qaAskOverlay">
+    <div class="modal qa-ask-modal">
+      <h2 id="qaAskTitle">확인이 필요합니다</h2>
+      <p class="qa-ask-item" id="qaAskItem">—</p>
+      <div class="qa-ask-message" id="qaAskMessage"></div>
+      <div class="qa-ask-detail" id="qaAskDetail"></div>
+      <textarea id="qaAskNote" class="modal-input" rows="2" placeholder="메모 (Fail·Blocked 이면 사유를 적어 주세요 — 결과와 CSV 에 남습니다)"></textarea>
+      <div class="qa-modal-actions" id="qaAskButtons"></div>
+    </div>
+  </div>
+
+  <!-- 테스트 계정 — 비밀번호는 이 PC 에 암호화해 두고 화면으로 다시 꺼내지 않는다 -->
+  <div class="overlay" id="qaAccountOverlay" onclick="if(event.target===this) closeQaAccounts()">
+    <div class="modal" style="width:520px;max-width:94vw">
+      <h2>테스트 계정</h2>
+      <p>시나리오에서 <code>$account.id</code> · <code>$account.password</code> 처럼 변수로 씁니다. 저장소·로그에는 남지 않습니다.</p>
+      <div class="qa-account-list" id="qaAccountList"></div>
+      <div class="qa-account-form">
+        <input type="hidden" id="qaAccKey">
+        <input id="qaAccLabel" class="modal-input" placeholder="이름 (예: 단체 사용자 1)">
+        <input id="qaAccId" class="modal-input" placeholder="아이디 ($account.id)" spellcheck="false">
+        <input id="qaAccPassword" class="modal-input" type="password" placeholder="비밀번호 ($account.password)">
+        <input id="qaAccCompany" class="modal-input" placeholder="회사 ID ($account.company, 선택)" spellcheck="false">
+        <input id="qaAccPhone" class="modal-input" placeholder="전화번호 ($account.phone, 선택)" spellcheck="false">
+        <input id="qaAccName" class="modal-input" placeholder="닉네임 ($account.name, 선택)">
+        <input id="qaAccEmail" class="modal-input" placeholder="이메일 ($account.email, 선택)" spellcheck="false">
+      </div>
+      <div class="qa-modal-actions">
+        <button class="btn-sm" onclick="newQaAccount()"><i class="ti ti-plus"></i>새 계정</button>
+        <button class="btn-sm primary" onclick="saveQaAccount()"><i class="ti ti-device-floppy"></i>저장</button>
+        <button class="btn-sm" onclick="closeQaAccounts()">닫기</button>
+      </div>
+    </div>
+  </div>
+
   <div class="overlay" id="connectOverlay">
     <div class="modal">
       <h2>기기 연결</h2>
@@ -659,6 +1103,24 @@
         style="flex:1; overflow-y:auto; background:#0a0a0a; border:1px solid var(--border); border-radius:8px; padding:12px; min-height:300px;">
         <pre id="activityInfoContent"
           style="font-size:11px; color:var(--muted); font-family:monospace; white-space:pre-wrap; word-break:break-all; margin:0; user-select:text;-webkit-user-select:text;cursor:text;">정보를 불러오는 중입니다...</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay update-overlay" id="updateOverlay">
+    <div class="modal update-modal" role="dialog" aria-modal="true" aria-labelledby="updateTitle">
+      <div class="update-icon"><i class="ti ti-sparkles"></i></div>
+      <div class="update-eyebrow">DROIDBRIDGE 업데이트</div>
+      <h2 id="updateTitle">새 버전을 사용할 수 있습니다</h2>
+      <p id="updateDescription">업데이트를 다운로드한 뒤 앱이 자동으로 재시작됩니다.</p>
+      <div class="update-progress" id="updateProgressWrap" hidden>
+        <div class="update-progress-track"><span id="updateProgressBar"></span></div>
+        <div class="update-progress-label" id="updateProgressLabel">다운로드 준비 중...</div>
+      </div>
+      <div class="update-error" id="updateError" hidden></div>
+      <div class="update-actions">
+        <button class="btn-primary" id="updateActionBtn" onclick="runUpdateAction()">다운로드 및 설치</button>
+        <button class="btn-sm" id="updateLaterBtn" onclick="closeUpdateDialog()">나중에</button>
       </div>
     </div>
   </div>

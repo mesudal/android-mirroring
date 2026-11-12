@@ -70,7 +70,7 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
 
 ### 2. 입력 주입 (터치 / 키 / 텍스트)
 
-렌더러가 JSON 으로 WS 에 보내면 브리지가 scrcpy 제어 패킷으로 바꿔 쓴다 (`injectTouch` 32B / `injectKeycode` 14B / `uhidInput` / `injectText`).
+렌더러가 JSON 으로 WS 에 보내면 브리지가 scrcpy 제어 패킷으로 바꿔 쓴다 (`injectTouch` 32B / `injectKeycode` 14B / `uhidInput` / `injectText`). 화면 전원은 scrcpy `TYPE_SET_DISPLAY_POWER(10)` 으로 제어하며, 화면을 끈 채 입력을 계속 받고 미러링 종료 시 다시 켠다.
 
 - **좌표는 렌더러에서 기기 픽셀로 환산해서 보낸다.** `sendTouchEvent()` 가 letterbox/pillarbox 여백과 보기 회전을 빼고 역산하므로, 캔버스 크기 로직을 건드리면 터치 정확도가 같이 깨진다.
 - **키보드는 UHID 가 기본, 클립보드가 폴백이다.** 브리지가 시작 시 `/dev/uhid` 접근 가능 여부로 판정해(`keyboardMode`) WS 메시지로 렌더러에 알려준다. 서버 로그에 UHID 오류가 뒤늦게 보이면 런타임에 클립보드로 되돌린다.
@@ -79,6 +79,8 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
   - 클립보드 폴백: scrcpy 의 `TYPE_INJECT_TEXT` 는 한글을 주입하지 못하므로 `TYPE_SET_CLIPBOARD(9) + paste:true` 를 쓴다. 숨은 `textarea` 값을 60ms 디바운스 후 이전 전송분과 공통 접두사 비교 → 차이만큼 백스페이스 + 나머지 붙여넣기 (`syncText()`). **이 디바운스와 순서가 한글 조합 레이스 컨디션("기서서" 현상)의 핵심이므로 임의로 줄이지 말 것.** 저장소에서 가장 취약한 로직이며 폐기 검토 중이다 (`docs/TODO.md` 2번).
 
 **클립보드 공유와 키보드 폴백은 별개다.** 미러링 중 PC 클립보드는 500ms 간격으로 확인해 Android와 동기화하고, 기기의 클립보드 메시지는 제어 소켓에서 읽어 PC에 반영한다. scrcpy 시퀀스 번호로 에코를 걸러내며, 텍스트만 지원하고 1MiB를 넘는 텍스트는 무시한다. 키보드 입력 폴백은 기존처럼 scrcpy 클립보드 붙여넣기를 사용한다.
+
+Android 개발자 옵션의 `show_touches` 는 물리 터치만 표시하고 scrcpy 가 주입한 PC 클릭은 표시하지 않는다. 녹화는 Android `screenrecord` 원본을 저장하므로 PC에서 누른 위치는 녹화 영상에 표시되지 않는다.
 
 ### 3. 화면 녹화
 
@@ -94,6 +96,43 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
 
 Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF JSON 으로만 받아 QA 리포트 평문을 넣을 수 없다. 토큰은 `safeStorage` 로 암호화해 `userData/jira.json`(mode 0600)에 두고 **렌더러로는 절대 돌려보내지 않는다**(`hasToken` 불리언만). `jira:open` 은 atlassian.net / id.atlassian.com 만 허용하는 화이트리스트가 걸려 있다. 스코프형 토큰이면 사이트 주소가 401 이라 `api.atlassian.com/ex/jira/<cloudId>` 게이트웨이로 폴백하고 그 경로를 캐시한다 — 이 분기는 자가진단이 덮고 있다.
 
+**스프린트는 이슈를 만든 뒤 Agile API(`POST /rest/agile/1.0/sprint/{id}/issue`)로 넣는다.** 스프린트는 사이트마다 번호가 다른 커스텀 필드이고 생성 화면에 없으면 생성 API 가 거부하므로 생성 본문에 넣지 않는다. 설정(`jira.json`)은 `sprintMode`(`off` / `active` / `fixed`)·`boardId`·`boardName`·`sprintId`·`sprintName`. `active` 는 발행할 때마다 `resolveSprint()` 가 보드의 진행 중 스프린트를 고른다(병렬 스프린트면 그 보드에서 만든 것 → 먼저 끝나는 것, `pickActiveSprint()` — 렌더러의 안내 문구용 `jiraPickActive()` 와 규칙을 맞춰 둘 것). 완료된 스프린트는 Jira 가 거부하므로 `fixed` 는 넣기 전에 상태를 확인한다. 스프린트 실패는 첨부 실패처럼 `r.warn` 으로만 돌려준다(이슈는 이미 만들어졌다). Agile API 의 401/403 은 스코프형 토큰의 Jira Software 권한 누락일 수 있어 `agileErr()` 가 그 안내를 붙인다.
+
+QA 화면 확인은 `src/qa-driver.js` 가 ADB UIAutomator XML을 읽고 `src/qa-xml.js` 가 접근성 요소와 좌표를 파싱한다. 렌더러의 QA 탭은 역할별 기기·앱 변형을 선택하고 화면 요소를 확인·탭한다(좌표 탭, 글자로 누르기).
+
+**QA 자동 진행** — 체크리스트(CSV) × 시나리오(JSON) → 실행기 → 회차 기록. 순수 로직은 전부 자가진단이 있다(실행기는 가짜 기기로).
+
+```
+qa-checklist.js  시트 CSV → 항목 (ID 모양으로 표 시작을 찾고, 열은 키워드로, 병합 셀은 위 값을 이어 씀)
+qa-scenario.js   시나리오 검증 · 공통 절차(use, $dev) 펼치기 · 변수($account.id …) 치환
+qa-runner.js     createRunner({ roles, scenarios, procedures, hooks }) → run({ items, update })
+qa-results.js    항목별 최근 결과 · 변화(fixed/regression/still/new) · 실행 범위 · 시트 CSV
+main.js          qa:accounts-* / qa:checklist(-import) / qa:scenarios / qa:run · stop · answer / qa:runs · run-detail / qa:export …
+```
+
+- **실행기는 Electron·adb 를 모른다.** 기기는 드라이버(역할마다 `getQaDriver(serial)`), 파일 저장·사람 응답·APK 설치·logcat 은 `hooks` 로 main 이 넣는다. 그래서 `node src/qa-runner.js` 가 가짜 기기로 판정·teardown·중단·업데이트 흐름을 검사한다. 새 단계 종류는 `qa-scenario.js` 의 `ACTIONS`/`EXPECTS`(검증)와 `qa-runner.js` 의 `execStep()`(실행) 두 곳에 같이 넣는다.
+- 판정: iOS 전용 → Skipped / `variants` 밖 → Skipped / 역할 기기 없음 → Blocked / `pre` 실패 → Blocked / `steps` 실패 → Fail(그 순간 스크린샷·XML) / logcat 의 FATAL EXCEPTION(`Process: <pkg>`)·ANR → Fail. **teardown 은 항상** 돈다(중단 요청이 와도 teardown 은 끝까지, `inTeardown`). 시나리오가 끈 네트워크는 teardown 이 안 켜도 실행기가 켠다.
+- 시나리오가 없는 항목은 `manualForUnscripted`(기본 켬)면 체크리스트 절차·기대 결과를 `ask` 로 띄워 사람이 판정한다.
+- **사람 응답은 `qa:prompt`(메인→렌더러 푸시) → `qa:answer`(requestId) 로 오간다.** `qa:stop` 은 기다리던 응답을 `{ action: 'stop' }` 으로 끝낸다. 푸시 두 개(`qa:progress`, `qa:prompt`)는 preload 에서 `removeAllListeners` 후 등록한다.
+- **지난 결과는 회차가 아니라 항목 단위로 찾는다**(`latestResults()`): 2차를 Fail 만 돌리면 Pass 항목은 2차에 없기 때문. 같은 앱·타입만, 업데이트 전 단계(`phase: 'before'`)와 중단(To do)은 빼고 본다. 기본 범위는 "지난 Pass 인 사람 판정 항목만 뺀다" — 자동 항목은 회귀 확인용으로 늘 다시 돌린다.
+- 저장: `userData/qa-accounts.json`(비밀번호 safeStorage, 렌더러에는 `hasPassword` 만), `qa-checklists/<appId>.json`, `qa-scenarios/<appId>/*.json`(앱에 든 `qa/scenarios/<appId>` 보다 우선), `qa-runs/<runId>/result.json` + 증거. 증거 경로를 렌더러에서 받을 때(`qa:evidence-open`, Jira 첨부 `qaEvidence`)는 `qaEvidencePath()` 로 실행 기록 폴더 안인지 확인한다.
+- QA 실행 중 logcat 은 역할 기기마다 별도 프로세스(`startQaLogcat`)로 받아 항목 구간만 자른다 — 화면의 LogCat 과 무관하다.
+- 업데이트 테스트 실행은 `qaInstallApk()`(앱 선택 창 버튼과 같은 함수)로 기존·업데이트를 설치한다. 기존 버전이 이미 같은 버전이면 `skipped` 로 성공 처리한다.
+- Jira: QA 결과의 실패 항목에서 연 등록 창(`openJiraModal(false, true)`)은 일반 초안을 불러오지도 저장하지도 않고(`jiraQaContext`), 등록 후 `qa:link-jira` 로 티켓 키를 실행 기록에 남긴다.
+
+- **QA 대상 앱 목록은 `src/qa-apps.js` 의 `QA_APPS` 한 곳이다.** 앱 → 타입 → 패키지 구조이고(제로톡 = 무료용 `net.zerotalk.free` / 단체용 사용자 `net.zerotalk.user` / 단체용 관리자 `net.zerotalk.admin`), 새 앱은 여기에 항목만 추가하면 좌측 메뉴의 앱 선택 창과 QA 탭이 그대로 그린다. `validateApps()` 자가진단이 id·패키지 중복을 잡는다. 렌더러는 `qa:apps` 로 받는다.
+- **고른 앱은 전역 하나, 타입은 기기 시리얼마다다** (`localStorage` `db_qa_target` = `{ appId, variants: { [appId]: { [serial]: variantId } } }`). 슬롯(A/B/C)이 아니라 시리얼에 묶어서, 기기 화면 왼쪽 메뉴(`openQaAppPicker()`)와 QA 탭 역할 카드가 같은 값을 보고 서로 반영한다. QA 탭 역할 카드는 저장된 배정이 없으면 같은 글자 슬롯의 기기를 기본으로 잡는다.
+- `qa:app-status` 는 타입별 설치 여부와 버전을 `dumpsys package <pkg>` 로 읽는다. **`dumpsys package --user 0 <pkg>` 는 패키지 인자를 무시하고 전체를 쏟아낸다** — 붙이지 말 것. 출력에는 다른 패키지 블록도 섞이므로 `parsePackageVersion()` 이 `Package [<pkg>]` 블록 안에서만 읽는다.
+- `updateDevicePanels()` 는 스크립트 로드 중에도 불린다. 그 안에서 아래쪽 `let` 상태(QA 등)를 건드리면 TDZ 예외로 렌더러 전체가 죽는다 — `qaBadgesReady` 같은 위쪽 플래그로 막는다.
+- **업데이트 테스트용 APK** — 앱 선택 창에서 타입마다 dev APK 두 개(`kind`: `base` 기존 버전 / `update` 업데이트)를 등록한다(`qa:apk-register`). 파일은 복사하지 않고 `userData/qa-apks.json`(`{ [appId]: { [variantId]: { base, update } } }`, 예전의 업데이트 하나짜리 형식은 `update` 로 읽는다)에 경로·크기·수정 시각만 두며, 같은 경로에 새로 빌드하면 바뀐 것을 보고 다시 읽는다. `qa:apk-install` 은 설치 직전에 판정을 다시 한다: `base` 는 `checkBaseInstall()` 의 `action` 대로 — **앱 데이터는 지울 수밖에 없을 때만 지운다**(실제 사용자처럼 기존 버전의 데이터를 업데이트까지 이어 가야 하므로): 미설치 `install` / 같은 버전·서명 `none`(설치 안 함) / 같은 서명의 낮은 버전 `upgrade`(`install -r`) / 더 높은 버전·다른 서명 `reinstall`(`adb uninstall` 후 설치 — Android 가 다운그레이드·서명 변경을 막는다), `update` 는 `adb install -r`(데이터 유지, `checkUpdate()`). 두 APK 의 짝(패키지·서명 같음, 업데이트 버전이 높음)은 `checkPair()`.
+- `src/apk-info.js` 가 aapt 없이 APK 를 읽는다: ZIP 중앙 디렉터리 → 바이너리 `AndroidManifest.xml`(패키지·versionCode·versionName·minSdk) → APK 서명 블록(v3.1 → v3 → v2 순, 첫 서명자 인증서). aapt2 빌드는 속성 이름을 비우고 리소스 id 로만 남기기도 해서 id(`0x0101021b` 등)로도 찾는다.
+- **서명 비교는 기기 `dumpsys package` 의 `signatures:[xxxxxxxx]` 값과 한다.** 이 값은 인증서 DER 의 Java `Arrays.hashCode(byte[])` 를 16진수로 쓴 것이라 `signerHash()` 로 같은 값을 계산한다(SM-G986N 에서 무료용 v3·관리자 v2 APK 로 일치 확인). v1(JAR) 서명만 있으면 서명은 "확인하지 못함" 경고로 두고 막지 않는다. 판정은 `checkUpdate()`: 패키지 불일치·최소 SDK·서명 다름·낮은 버전은 설치 불가, 같은 버전·미설치는 경고.
+- **드라이버는 기기 1대당 하나다** (`createDriver({ adb, serial })`, `main.js` 의 `getQaDriver()` 가 캐시). 드라이버가 그 기기의 adb 명령 큐를 들고 있어 같은 기기 명령은 순서대로, 다른 기기는 병렬로 돈다. 모든 메서드는 예외 대신 `{ ok, message }` 를 돌려준다.
+- **제로톡(`net.zerotalk.free`)은 Flutter 다.** 글자가 `text` 가 아니라 `content-desc` 로 오고 `resource-id` 는 전부 비어 있다(SM-G986N / Android 13 실측). 그래서 `text` · `textContains` · `textMatches` 셀렉터는 **둘 다** 본다. `{ id: ... }` 셀렉터는 이 앱에서 쓸 수 없다.
+- 셀렉터 종류와 검증은 `qa-xml.js` 의 `SELECTOR_KEYS` / `selectorError()` 한 곳이다. 넓이 0 노드(`[0,0][0,0]`)는 매칭에서 빠진다.
+- `qa:packages` 는 `pm list packages -3 --user 0` 을 쓴다. 보안 폴더가 있는 기기는 `--user` 없이 조회하면 `Shell does not have permission to access user 150` 으로 실패한다.
+- 드라이버의 기기 상태 명령(네트워크·권한·오버레이·배터리 최적화·위치)은 **아직 실기기에서 돌려 보지 않았다.** 무선 ADB 로 붙은 기기는 네트워크 차단을 거부한다(와이파이를 끄면 adb 가 끊겨 되돌릴 수 없다).
+
 ### 5. 패킷 분석 프록시 (`src/proxy-server.js`, `src/cert-manager.js`)
 
 MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트별 인증서를 즉석 발급(CA 는 `userData/proxy-certs` 에 영속)하고, 복호화한 요청/응답을 `proxy:packet` 이벤트로 렌더러에 흘린다. 기기 설정은 adb(`settings put global http_proxy`) 로 자동 주입한다.
@@ -105,13 +144,14 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 
 ## 코드 수정 시 알아야 할 규칙
 
-- **IPC 를 추가하면 반드시 3곳을 같이 고친다**: `main.js` 의 `ipcMain.handle` → `preload.js` 의 `contextBridge` 노출 → `renderer.js` 의 `window.db.*` 호출. 채널 접두사는 `adb:` / `mirror:` / `proxy:` / `dialog:` / `setup:` / `capture:` / `logcat:` / `jira:` / `app:` / `device:` / `window:`.
+- **IPC 를 추가하면 반드시 3곳을 같이 고친다**: `main.js` 의 `ipcMain.handle` → `preload.js` 의 `contextBridge` 노출 → `renderer.js` 의 `window.db.*` 호출. 채널 접두사는 `adb:` / `mirror:` / `proxy:` / `dialog:` / `setup:` / `capture:` / `logcat:` / `jira:` / `qa:` / `app:` / `device:` / `window:`.
 - **메인 → 렌더러 푸시 이벤트(`mirror:log`, `logcat:data`, `logcat:stopped`, `proxy:packet`)는 preload 에서 `removeAllListeners` 후 등록한다.** 재연결마다 리스너가 쌓이면 같은 줄이 여러 번 그려진다.
 - **렌더러에 모듈 시스템이 없다.** `renderer.js` 는 클래식 `<script>` 한 개이고 모든 함수가 전역이며, `index.html` 이 인라인 `onclick="fn()"` 으로 호출한다. UI 동작 추가 = 전역 함수 + onclick. (`src/` 는 CommonJS.) DOM 요소가 없어도 죽지 않도록 `setText()` / `$()` 를 거치는 관행이 있다 — 탭에서 내려간 페이지의 마크업이 그대로 남아 있기 때문이다.
-- **레이아웃 상수가 CSS 와 JS 양쪽에 있다.** `renderer.js` 의 `LOGCAT_MIN_WIDTH(720)` / `TOOL_WIDTH(290)` / `TOOL_COLLAPSED_WIDTH(18)` / `LAYOUT_GAP` / `LAYOUT_PAD` 는 `style.css` 값을 그대로 옮겨 적은 것이고, 이 합으로 `window:set-min-size` 최소 창 너비를 계산한다. 한쪽만 고치면 마지막 컬럼이 잘린다. 단 **창 최소 크기의 하한은 실행 시 크기**다(`pickLaunchSize()` — 가로·세로 모두). 렌더러가 보내는 값은 그 하한을 **올리기만** 하고(디바이스가 넓을 때), 최소 높이는 아예 건드리지 않는다.
+- **창 최소 크기와 시작 크기는 별개다.** `pickLaunchSize()` 는 화면 작업 영역에 맞춘 시작 크기만 정하고, 창은 최소 `720×320` 까지 줄일 수 있다. `window:set-min-size` 는 필요한 경우 최소 너비를 더 올릴 수 있지만, 시작 크기를 하한으로 삼지 않는다.
+- **Windows 에서 앱이 관리자 권한으로 뜨면 탐색기의 파일 드롭이 막힌다(UIPI — 창 전체 금지 커서, drop 이벤트 자체가 안 온다).** "모든 사용자용"(HKLM, Program Files) 설치는 업데이트 설치가 관리자 권한으로 돌고 `runAfterFinish`/`quitAndInstall(true, true)` 로 다시 뜬 앱이 그 권한을 물려받는다. 그래서 시작할 때 `src/win-elevation.js` 의 `ensureUnelevated()` 가 `%SystemRoot%System32whoami.exe /groups` 의 무결성 SID(`S-1-16-12288` 이상)로 판별하고, 관리자면 `explorer.exe <자기 exe>` 로 일반 권한으로 다시 띄운 뒤 끝낸다. UAC 를 끈 PC 처럼 다시 떠도 관리자면 무한 반복하지 않게 1분 안의 재실행 기록(`userData/unelevate.json`)이 있으면 멈추고 로그만 남긴다. `whoami` 는 반드시 전체 경로로 — PATH 에 Git 의 GNU whoami 가 먼저 있으면 `/groups` 를 모른다. `--allow-elevated` 인자로 끌 수 있다.
 - **바이너리 경로는 `resolveBin()` 을 통해서만 얻는다.** `bin/` → macOS/Linux 표준 경로(`/opt/homebrew/bin` 등) → `where`/`which` 순으로 탐색한다. macOS GUI 실행 시 `$PATH` 가 비어 있는 문제 때문에 필요한 로직이다. 패키징 상태에서 `resourcesPath/bin` 이 쓰기 불가면 `userData/bin` 으로 복사 후 전환한다 (`main.js` 상단).
 - **`spawn` 하는 곳에는 `proc.on('error')` 를 반드시 단다.** 핸들러가 없으면 spawn 실패가 처리되지 않은 이벤트로 올라와 메인 프로세스가 통째로 죽는다.
-- UI 설정값은 `localStorage` 에 `db_` 접두사로 저장한다: `db_screen_width`, `db_bitrate`, `db_fps`, `db_logcat_font`, `db_log_app_only`, `db_tools_collapsed`, `db_jira_draft`, `db_jira_pins`, `db_jira_projects`.
+- UI 설정값은 `localStorage` 에 `db_` 접두사로 저장한다: `db_screen_width`, `db_bitrate`, `db_fps`, `db_theme`, `db_logcat_font`, `db_log_app_only`, `db_tools_collapsed`, `db_jira_draft`, `db_jira_pins`, `db_jira_projects`, `db_qa_roles`, `db_qa_target`, `db_qa_role_accounts`, `db_qa_picked`.
 
 ## 빌드 / 배포
 
