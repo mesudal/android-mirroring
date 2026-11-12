@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, nativeImage } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const path = require('path')
-const { spawn, execFile, execSync } = require('child_process')
+const { spawn, execFile, execSync, execFileSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
@@ -15,6 +15,7 @@ const qaRunner = require('./qa-runner')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
+const { ensureUnelevated } = require('./win-elevation')
 
 const WINDOW_PREFERENCES = path.join(app.getPath('userData'), 'window-preferences.json')
 const MIN_WINDOW_WIDTH = 720
@@ -280,6 +281,15 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // 관리자 권한으로 떴으면(모든 사용자용 설치 + 업데이트 뒤 자동 재실행) 일반 권한으로 다시 띄운다.
+  // 관리자 권한 창에는 Windows 가 탐색기의 파일 드롭을 막아 APK 끌어 놓기 설치가 안 된다. (src/win-elevation.js)
+  if (platform === 'win32' && app.isPackaged && !process.argv.includes('--allow-elevated')) {
+    const r = ensureUnelevated({
+      execFileSync, spawn, fs, path, execPath: process.execPath, log: logMirror,
+      markerFile: path.join(app.getPath('userData'), 'unelevate.json'),
+    })
+    if (r === 'relaunched') { app.quit(); return }
+  }
   setupAutoUpdater()
   createWindow()
   if (app.isPackaged && platform === 'win32' && !isDev) {

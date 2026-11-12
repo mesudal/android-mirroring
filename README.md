@@ -207,6 +207,7 @@ QA 탭에서 체크리스트를 가져와 항목을 차례로 실행하고, 회�
 ## 문제 해결
 
 - **원인을 모를 때는 로그부터** — 왼쪽 **미러링 로그** 패널, 또는 파일 `%APPDATA%\droidbridge\mirror.log` (macOS `~/Library/Application Support/droidbridge/mirror.log`). 앱을 켤 때마다 비워지므로 문제가 생긴 직후에 확인하세요.
+- **APK 를 끌어 놓을 때 커서가 금지 표시로 바뀌고 설치가 안 될 때**: 앱이 관리자 권한으로 실행된 경우입니다. Windows 는 관리자 권한 창에 탐색기의 파일 드롭을 막습니다. "모든 사용자용"(Program Files)으로 설치하면 업데이트 뒤 자동으로 다시 뜬 앱이 관리자 권한을 물려받아 생깁니다. 1.2.18 부터는 앱이 스스로 일반 권한으로 다시 뜹니다. 그 전 버전이면 앱을 닫고 시작 메뉴·바탕 화면 아이콘으로 다시 여세요
 - **기기가 안 보일 때**: `adb devices` 로 직접 확인. `unauthorized` 면 폰 화면의 "USB 디버깅 허용" 팝업을 확인
 - **Windows 에서 adb.exe 실행 오류**: `AdbWinApi.dll`, `AdbWinUsbApi.dll` 이 adb.exe 와 같은 폴더에 있는지 확인
 - **로그가 시간이 지나면 사라질 때**: [LogCat](#logcat) 참고 — 3,000줄 제한이거나 현재 앱 필터입니다
