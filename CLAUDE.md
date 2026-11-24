@@ -47,7 +47,7 @@ adb forward tcp → scrcpy 소켓 파싱 → 로컬 WS
 renderer: WebSocket → WebCodecs VideoDecoder → <canvas>
 ```
 
-UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마크업 순서는 device → logcat → tool 이고 **CSS `order` 로 재배치**하므로(`style.css` 의 `.tool-col{order:1}` …) 화면 위치와 DOM 순서가 다르다.
+현재 기본 UI 는 최대 세 기기의 미러링 화면을 한 행에 배치한다. LogCat과 미러링 로그는 상단의 **로그** 버튼으로 팝업을 열어 확인하며, 팝업이 닫혀 있을 때는 기기 화면이 전체 세로 영역을 사용한다.
 
 ### 1. 미러링 (`src/mirror-bridge.js` ↔ `public/renderer.js`)
 

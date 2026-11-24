@@ -14,6 +14,7 @@
   <header class="dual-topbar">
     <div class="logo"><span class="logo-dot"></span>DroidBridge</div>
     <div class="nav-spacer"></div>
+    <button class="btn-sm" onclick="openDualLogModal()" title="미러링 로그와 전체 LogCat 열기"><i class="ti ti-terminal-2"></i>로그</button>
     <button class="btn-sm" onclick="openToolPage('qa')" title="QA 자동 진행·체크리스트·결과"><i class="ti ti-checklist"></i>QA</button>
     <button class="btn-sm" onclick="openToolPage('settings')" title="Jira·녹화·테마·업데이트 설정"><i class="ti ti-settings"></i>설정</button>
     <span class="topbar-sep"></span>
@@ -23,6 +24,7 @@
       <i class="ti ti-device-plus"></i>기기 추가
     </button>
   </header>
+  <div class="log-modal-backdrop" id="logModalBackdrop" onclick="closeDualLogModal()" hidden></div>
   <main class="dual-workspace">
     <section class="device-panel active" data-slot="A">
       <header class="device-panel-head">
@@ -151,6 +153,9 @@
           <button class="btn-icon" onclick="clearLogcat()" title="로그 지우기"><i class="ti ti-trash"></i></button>
           <button class="btn-icon" id="logcatToggle" onclick="toggleLogcat()" title="LogCat 시작/중지"><i class="ti ti-player-play"></i></button>
         </div>
+        <button class="btn-icon dual-log-close" onclick="closeDualLogModal()" title="로그 창 닫기">
+          <i class="ti ti-x"></i>
+        </button>
       </div>
       <pre class="dual-log-body" id="scrcpyLog"></pre>
       <pre class="logcat-body" id="logcatBody" style="display:none"></pre>

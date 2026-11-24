@@ -2689,6 +2689,25 @@ function showDualLogTab(tab) {
   renderLogcat()
 }
 
+function openDualLogModal() {
+  document.body.classList.add('log-modal-open')
+  const backdrop = document.getElementById('logModalBackdrop')
+  if (backdrop) backdrop.hidden = false
+  showDualLogTab(dualLogTab)
+}
+
+function closeDualLogModal() {
+  document.body.classList.remove('log-modal-open')
+  const backdrop = document.getElementById('logModalBackdrop')
+  if (backdrop) backdrop.hidden = true
+}
+
+window.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.body.classList.contains('log-modal-open')) {
+    closeDualLogModal()
+  }
+})
+
 function setDualLogDevice(slot) {
   dualLogDevice = ['all', ...deviceSlots.map(device => device.slot)].includes(slot) ? slot : 'all'
   renderLogcat()
@@ -2728,7 +2747,6 @@ function setupDualLogResize() {
   window.addEventListener('resize', apply)
 }
 
-setupDualLogResize()
 showDualLogTab('mirror')
 
 async function toggleLogcat() {
