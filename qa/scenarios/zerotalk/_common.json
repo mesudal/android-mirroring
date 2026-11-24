@@ -1,0 +1,29 @@
+{
+  "_설명": "제로톡 공통 절차. 시나리오에서 { \"use\": \"이름\", \"dev\": \"A\" } 로 불러 쓴다. 화면 문구는 2026-11-11 SM-G986N(Android 13) · 무료용 v1.0.9(55) 실측 기준이다.",
+  "procedures": {
+    "처음 실행 동의·권한 통과": [
+      { "dev": "$dev", "expect": "visible", "sel": { "text": "동의하기" }, "timeout": 15000 },
+      { "dev": "$dev", "do": "tap", "sel": { "text": "동의하기" } },
+      { "dev": "$dev", "do": "tap", "sel": { "text": "다음" }, "timeout": 5000 },
+      { "dev": "$dev", "do": "tap", "sel": { "textMatches": "^(앱 사용 중에만 허용|허용)$" }, "timeout": 4000, "optional": true },
+      { "dev": "$dev", "do": "tap", "sel": { "textMatches": "^(앱 사용 중에만 허용|허용)$" }, "timeout": 4000, "optional": true },
+      { "dev": "$dev", "do": "tap", "sel": { "textMatches": "^(앱 사용 중에만 허용|허용)$" }, "timeout": 4000, "optional": true },
+      { "dev": "$dev", "do": "tap", "sel": { "textMatches": "^(앱 사용 중에만 허용|허용)$" }, "timeout": 4000, "optional": true },
+      { "dev": "$dev", "do": "tap", "sel": { "textMatches": "^(앱 사용 중에만 허용|허용)$" }, "timeout": 4000, "optional": true },
+      { "dev": "$dev", "do": "tap", "sel": { "textMatches": "^(앱 사용 중에만 허용|허용)$" }, "timeout": 4000, "optional": true },
+      { "dev": "$dev", "do": "tap", "sel": { "textMatches": "^(앱 사용 중에만 허용|허용)$" }, "timeout": 4000, "optional": true }
+    ],
+    "앱 최초 설치 상태로 실행": [
+      { "dev": "$dev", "do": "stop" },
+      { "dev": "$dev", "do": "clearData" },
+      { "dev": "$dev", "do": "launch" }
+    ],
+    "이메일 로그인": [
+      { "dev": "$dev", "expect": "visible", "sel": { "text": "이메일 로그인" }, "timeout": 15000 },
+      { "dev": "$dev", "do": "type", "sel": { "class": "EditText", "index": 0 }, "value": "$account.id" },
+      { "dev": "$dev", "do": "type", "sel": { "class": "EditText", "index": 1 }, "value": "$account.password" },
+      { "dev": "$dev", "do": "key", "key": "back", "optional": true },
+      { "dev": "$dev", "do": "tap", "sel": { "text": "로그인" } }
+    ]
+  }
+}

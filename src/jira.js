@@ -362,12 +362,122 @@ async function attachFile(cfg, key, filename, buf) {
   }
 }
 
+// ── 스프린트 (Jira Software Agile REST API 1.0) ─────────────────────────
+// 이슈 생성 API 로는 스프린트를 안정적으로 넣을 수 없다 — 스프린트는 커스텀 필드
+// (customfield_100xx, 사이트마다 번호가 다르다)이고 생성 화면에 없으면 거부된다.
+// 그래서 이슈를 만든 뒤 POST /rest/agile/1.0/sprint/{id}/issue 로 옮긴다.
+// 진행 중(active)·예정(future) 스프린트에만 넣을 수 있고, 완료(closed)된 스프린트는 Jira 가 거부한다.
+
+// 스코프형 토큰은 Jira Software 권한(read/write:sprint)이 빠져 있을 수 있다 — 원인을 같이 알려 준다
+function agileErr(r) {
+  const base = errText(r)
+  if (r.status === 401 || r.status === 403) {
+    return `${base} / 스프린트 권한이 없는 토큰일 수 있습니다 (권한 범위를 지정한 토큰이면 Jira Software 권한을 추가해 주세요)`
+  }
+  return base
+}
+
+// 프로젝트의 보드 목록. 스프린트는 스크럼 보드에만 있다 (칸반은 type: 'kanban').
+async function listBoards(cfg, projectKey) {
+  const key = String(projectKey || '').trim().toUpperCase()
+  if (!key) return { ok: false, message: '프로젝트를 먼저 고르세요' }
+  const miss = missingFields(cfg)
+  if (miss) return { ok: false, message: miss }
+  try {
+    const r = await jiraFetch(cfg, `/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(key)}&maxResults=50`)
+    if (!r.ok) return { ok: false, message: agileErr(r), status: r.status }
+    const boards = (r.body.values || []).map(b => ({ id: b.id, name: b.name || String(b.id), type: b.type || '' }))
+    return { ok: true, boards }
+  } catch (e) {
+    return { ok: false, message: `보드 조회 실패: ${e.message}` }
+  }
+}
+
+// 보드의 진행 중·예정 스프린트. 진행 중인 것을 먼저, 그 안에서는 시작일 순으로 정렬한다.
+async function listSprints(cfg, boardId, states = 'active,future') {
+  const id = Number(boardId)
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, message: '보드를 먼저 고르세요' }
+  const miss = missingFields(cfg)
+  if (miss) return { ok: false, message: miss }
+  try {
+    const r = await jiraFetch(cfg, `/rest/agile/1.0/board/${id}/sprint?state=${encodeURIComponent(states)}&maxResults=50`)
+    if (!r.ok) {
+      // 칸반 보드에 스프린트를 물으면 400 "이 보드는 스프린트를 지원하지 않습니다" 가 온다
+      return { ok: false, message: r.status === 400 ? `${errText(r)} / 스크럼 보드만 스프린트가 있습니다` : agileErr(r), status: r.status }
+    }
+    const order = { active: 0, future: 1 }
+    const sprints = (r.body.values || [])
+      .map(s => ({
+        id: s.id, name: s.name || String(s.id), state: s.state || '',
+        startDate: s.startDate || '', endDate: s.endDate || '', originBoardId: s.originBoardId ?? null,
+      }))
+      .sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9) || String(a.startDate).localeCompare(String(b.startDate)))
+    return { ok: true, sprints }
+  } catch (e) {
+    return { ok: false, message: `스프린트 조회 실패: ${e.message}` }
+  }
+}
+
+// 진행 중인 스프린트 하나를 고른다. 보통 하나지만, 병렬 스프린트를 켠 사이트는 여러 개일 수 있다.
+// 그 보드에서 만든 스프린트(originBoardId)를 먼저, 그다음 먼저 끝나는 것을 고른다.
+function pickActiveSprint(sprints, boardId) {
+  const active = (sprints || []).filter(s => s.state === 'active')
+  if (!active.length) return null
+  const own = active.filter(s => s.originBoardId === Number(boardId))
+  const pool = own.length ? own : active
+  return pool.slice().sort((a, b) => String(a.endDate || '9').localeCompare(String(b.endDate || '9')))[0]
+}
+
+// 설정(mode·보드·스프린트) → 실제로 넣을 스프린트.
+//   { ok:true, sprint }                넣을 곳이 정해졌다
+//   { ok:true, sprint:null, message }  넣지 않는다 (지정 안 함 / 진행 중인 스프린트 없음)
+//   { ok:false, message }              조회 실패 / 지정한 스프린트를 쓸 수 없음
+async function resolveSprint(cfg, sc) {
+  const mode = sc && sc.sprintMode
+  if (mode !== 'active' && mode !== 'fixed') return { ok: true, sprint: null, message: '' }
+  if (mode === 'active') {
+    const r = await listSprints(cfg, sc.boardId, 'active')
+    if (!r.ok) return r
+    const sprint = pickActiveSprint(r.sprints, sc.boardId)
+    return sprint ? { ok: true, sprint }
+      : { ok: true, sprint: null, message: `${sc.boardName || '보드'} 에 진행 중인 스프린트가 없어 백로그에 남겼습니다` }
+  }
+  const id = Number(sc.sprintId)
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, message: '지정한 스프린트가 없습니다 — Jira 설정에서 스프린트를 골라 주세요' }
+  try {
+    const r = await jiraFetch(cfg, `/rest/agile/1.0/sprint/${id}`)
+    if (!r.ok) return { ok: false, message: agileErr(r), status: r.status }
+    if (r.body.state === 'closed') {
+      return { ok: false, message: `지정한 스프린트 '${r.body.name || id}' 는 이미 완료됐습니다 — Jira 설정에서 다시 골라 주세요` }
+    }
+    return { ok: true, sprint: { id, name: r.body.name || sc.sprintName || String(id), state: r.body.state || '' } }
+  } catch (e) {
+    return { ok: false, message: `스프린트 조회 실패: ${e.message}` }
+  }
+}
+
+// 만든 이슈를 스프린트로 옮긴다. 성공하면 Jira 는 204(본문 없음)를 준다.
+async function addIssueToSprint(cfg, sprintId, issueKey) {
+  try {
+    const r = await jiraFetch(cfg, `/rest/agile/1.0/sprint/${Number(sprintId)}/issue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issues: [String(issueKey)] }),
+    })
+    if (!r.ok) return { ok: false, message: agileErr(r), status: r.status }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, message: `스프린트 추가 실패: ${e.message}` }
+  }
+}
+
 // 자가진단에서 가짜 서버를 바꿔 끼울 때만 쓴다
 function baseCacheClearForTest() { baseCache.clear(); cloudIdCache.clear() }
 
 module.exports = {
   DEFAULT_SITE, authHeader, apiBase, errText, missingFields, buildIssueBody,
   createIssue, attachFile, testConn, listIssueTypes, listCreateFields, buildExtraFields, searchAssignable, pingAuth,
+  listBoards, listSprints, pickActiveSprint, resolveSprint, addIssueToSprint,
 }
 
 // ── 자가진단: node src/jira.js ────────────────────────────────
@@ -560,6 +670,69 @@ if (require.main === module) {
       assert.ok(r.message.includes('만료'), name + ': 만료 안내가 없다 — ' + r.message)
     }
 
-    console.log('jira.js 자가진단 통과 — 주소 4 / 페이로드 5 / 오류문구 4 / 필수값 4 / 토큰 폴백 4 / 원인 안내 3 / 이슈타입 3 / 필드 7')
+    // ── 스프린트 ──
+    // 진행 중 스프린트 고르기: 여러 개면 그 보드에서 만든 것, 그다음 먼저 끝나는 것
+    const SP = [
+      { id: 1, name: '예정', state: 'future', originBoardId: 7 },
+      { id: 2, name: '다른보드', state: 'active', endDate: '2026-11-15', originBoardId: 9 },
+      { id: 3, name: '늦게끝남', state: 'active', startDate: '2026-11-10', endDate: '2026-11-30', originBoardId: 7 },
+      { id: 4, name: '먼저끝남', state: 'active', startDate: '2026-11-06', endDate: '2026-11-20', originBoardId: 7 },
+    ]
+    assert.strictEqual(pickActiveSprint(SP, 7).id, 4, '자기 보드 것 중 먼저 끝나는 것')
+    assert.strictEqual(pickActiveSprint(SP, 99).id, 2, '자기 보드 것이 없으면 전체 중 먼저 끝나는 것')
+    assert.strictEqual(pickActiveSprint([SP[0]], 7), null, '진행 중이 없으면 null')
+    assert.strictEqual(pickActiveSprint([], 7), null)
+
+    // 보드·스프린트 조회 + 정렬(진행 중 먼저) + 이슈 추가 요청 모양
+    baseCacheClearForTest()
+    const agileCalls = []
+    global.fetch = async (url, opts = {}) => {
+      agileCalls.push({ url, method: opts.method || 'GET', body: opts.body })
+      if (url.includes('/rest/agile/1.0/board?projectKeyOrId=PROJ')) {
+        return mk(200, { values: [{ id: 7, name: 'PROJ 보드', type: 'scrum' }, { id: 8, name: '칸반', type: 'kanban' }] })
+      }
+      if (url.includes('/rest/agile/1.0/board/8/sprint')) return mk(400, { errorMessages: ['The board does not support sprints'] })
+      if (url.includes('/rest/agile/1.0/board/7/sprint?state=active%2Cfuture')) return mk(200, { values: [SP[0], SP[2], SP[3]] })
+      if (url.includes('/rest/agile/1.0/board/7/sprint?state=active')) return mk(200, { values: [SP[2], SP[3]] })
+      if (url.includes('/rest/agile/1.0/board/6/sprint?state=active')) return mk(200, { values: [] })
+      if (url.endsWith('/rest/agile/1.0/sprint/4')) return mk(200, { id: 4, name: '먼저끝남', state: 'active' })
+      if (url.endsWith('/rest/agile/1.0/sprint/5')) return mk(200, { id: 5, name: '지난 스프린트', state: 'closed' })
+      if (url.endsWith('/rest/agile/1.0/sprint/4/issue')) return { ok: true, status: 204, text: async () => '', json: async () => null }
+      if (url.endsWith('/rest/agile/1.0/sprint/6/issue')) return mk(403, { errorMessages: ['권한 없음'] })
+      return mk(404, {})
+    }
+    const cfgA = { site: 'a.atlassian.net', email: 'a@b.c', token: 't' }
+    const bl = await listBoards(cfgA, ' proj ')
+    assert.ok(bl.ok, '보드 조회 실패: ' + bl.message)
+    assert.deepStrictEqual(bl.boards, [{ id: 7, name: 'PROJ 보드', type: 'scrum' }, { id: 8, name: '칸반', type: 'kanban' }])
+    assert.ok(!(await listBoards(cfgA, '')).ok, '빈 프로젝트 키는 거부')
+
+    const sl = await listSprints(cfgA, 7)
+    assert.ok(sl.ok, '스프린트 조회 실패: ' + sl.message)
+    assert.deepStrictEqual(sl.sprints.map(s => s.id), [4, 3, 1], '진행 중 먼저, 그 안에서는 시작일 순')
+    const kb = await listSprints(cfgA, 8)
+    assert.ok(!kb.ok && kb.message.includes('스크럼 보드'), '칸반 보드 안내가 없다: ' + kb.message)
+    assert.ok(!(await listSprints(cfgA, 'x')).ok, '잘못된 보드 id 는 거부')
+
+    // 설정 → 실제 스프린트
+    assert.deepStrictEqual(await resolveSprint(cfgA, { sprintMode: 'off' }), { ok: true, sprint: null, message: '' })
+    assert.strictEqual((await resolveSprint(cfgA, { sprintMode: 'active', boardId: 7 })).sprint.id, 4)
+    const none = await resolveSprint(cfgA, { sprintMode: 'active', boardId: 6, boardName: 'B6' })
+    assert.ok(none.ok && none.sprint === null && none.message.includes('백로그'), '진행 중 없음 안내: ' + none.message)
+    assert.strictEqual((await resolveSprint(cfgA, { sprintMode: 'fixed', sprintId: 4 })).sprint.name, '먼저끝남')
+    const closed = await resolveSprint(cfgA, { sprintMode: 'fixed', sprintId: 5 })
+    assert.ok(!closed.ok && closed.message.includes('완료'), '완료된 스프린트는 거부: ' + closed.message)
+    assert.ok(!(await resolveSprint(cfgA, { sprintMode: 'fixed' })).ok, '지정 모드인데 스프린트가 없으면 실패')
+
+    // 이슈 추가: 204 성공, 403 은 권한 안내
+    agileCalls.length = 0
+    assert.ok((await addIssueToSprint(cfgA, 4, 'PROJ-12')).ok, '204 를 성공으로 봐야 한다')
+    const add = agileCalls.find(c => c.url.endsWith('/sprint/4/issue'))
+    assert.strictEqual(add.method, 'POST')
+    assert.deepStrictEqual(JSON.parse(add.body), { issues: ['PROJ-12'] })
+    const denied = await addIssueToSprint(cfgA, 6, 'PROJ-12')
+    assert.ok(!denied.ok && denied.message.includes('스프린트 권한'), '권한 안내가 없다: ' + denied.message)
+
+    console.log('jira.js 자가진단 통과 — 주소 4 / 페이로드 5 / 오류문구 4 / 필수값 4 / 토큰 폴백 4 / 원인 안내 3 / 이슈타입 3 / 필드 7 / 스프린트 15')
   })().catch(e => { console.error('자가진단 실패:', e.message); process.exit(1) })
 }
